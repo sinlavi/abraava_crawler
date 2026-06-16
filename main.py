@@ -10,6 +10,7 @@ from balethon import Client
 from core.logger import logger
 from core.http_client import HttpClient
 
+from utils.helpers import get_high_res_artwork
 from crawlers.utils import get_track
 from bot.handlers.preview import send_voice_preview
 from services.api_client import APIClient
@@ -81,14 +82,17 @@ async def run_crawler():
                         track = track_data["results"][0]
 
                         # 2. Upload Artwork
-                        artwork_url = track.get("artworkUrl", track.get("artworkUrl100"))
+                        artwork_url = get_high_res_artwork(track.get("artworkUrl100"), 400)
                         if artwork_url:
-                            artwork_bytes = await artwork_service.get_artwork_for_display("collection", track.get("collectionId") or track_id, artwork_url, user_id)
-                            if artwork_bytes:
-                                caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
-                                await artwork_service.send_artwork_photo(bot, TARGET_CHANNEL_ID, artwork_bytes, caption,
-                                                                         entity_type="collection", entity_id=track.get("collectionId") or track_id,
-                                                                         user_id=user_id, silent=True)
+                            coll_id = track.get("collectionId") or track_id
+                            # Only upload and mirror if not already mirrored
+                            if not await artwork_service.get_cached_artwork_url("collection", coll_id):
+                                artwork_bytes = await artwork_service.get_artwork_for_display("collection", coll_id, artwork_url, user_id)
+                                if artwork_bytes:
+                                    caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
+                                    await artwork_service.send_artwork_photo(bot, TARGET_CHANNEL_ID, artwork_bytes, caption,
+                                                                             entity_type="collection", entity_id=coll_id,
+                                                                             user_id=user_id, silent=True)
 
                         # 3. Upload Preview
                         if track.get("previewUrl"):
