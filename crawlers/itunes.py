@@ -117,7 +117,7 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
     session = await HttpClient.get_session()
 
     # Endpoints that are specific to 3rah API and not available on official iTunes
-    is_3rah_specific = any(endpoint.startswith(p) for p in ["mirror", "lyrics", "track/save", "song/save", "collection/save", "album/save", "artist/save"])
+    is_3rah_specific = any(endpoint.startswith(p) for p in ["mirror", "lyrics", "track/save", "song/save", "collection/save", "album/save", "artist/save", "download"])
     max_attempts = 1 if is_3rah_specific else 3
 
     for attempt in range(max_attempts):
@@ -254,3 +254,16 @@ async def save_metadata(entity_type: str, data: Union[Dict, List]) -> Optional[D
     endpoint = f"{entity_type}/save"
     logger.info(f"Syncing {entity_type} metadata to 3rah API")
     return await fetch_itunes(endpoint, method="POST", payload=data)
+
+
+async def get_download_queue(status: str = "pending", limit: int = 10) -> Optional[Dict[str, Any]]:
+    logger.info(f"Fetching download queue with status: {status}")
+    return await fetch_itunes("download/queue", params={"status": status, "limit": limit})
+
+
+async def update_download_status(download_id: int, status: str, error_message: str = None) -> Optional[Dict[str, Any]]:
+    logger.info(f"Updating download {download_id} to status: {status}")
+    payload = {"id": download_id, "status": status}
+    if error_message:
+        payload["errorMessage"] = error_message
+    return await fetch_itunes("download/update", method="POST", payload=payload)
