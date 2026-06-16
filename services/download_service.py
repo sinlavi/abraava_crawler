@@ -211,7 +211,8 @@ class DownloadService:
                 status_msg = await self._update_status(chat_id, status_msg, "🏷️ *در حال تگ‌گذاری فایل...*",
                                                        status_prefix, reply_markup, is_batch, silent=silent)
                 lyrics_dict = await lyrics_service.get_lyrics(track_id, track.get("trackName", ""),
-                                                              track.get("artistName", ""), track.get("collectionName"))
+                                                              track.get("artistName", ""), track.get("collectionName"),
+                                                              duration_ms=duration_ms)
                 lyrics_to_tag = (lyrics_dict.get("synced") or lyrics_dict.get("plain")) if lyrics_dict else None
                 self.tagging_service.tag_mp3(Path(mp3_path), track, cover_bytes, lyrics=lyrics_to_tag)
 
