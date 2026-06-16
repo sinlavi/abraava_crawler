@@ -10,6 +10,8 @@ from balethon import Client
 from core.logger import logger
 from core.http_client import HttpClient
 
+from crawlers.utils import get_track
+from bot.handlers.preview import send_voice_preview
 from services.api_client import APIClient
 from services.user_settings_service import UserSettingsService
 from services.artwork_service import ArtworkService
@@ -39,63 +41,84 @@ async def run_crawler():
     tagging_service = TaggingService()
     error_notifier = BaleUploadErrorNotifier(api_client)
 
-    bot = Client(token=BOT_TOKEN, proxy=PROXY)
+    async with Client(token=BOT_TOKEN, proxy=PROXY) as bot:
+        download_service = DownloadService(bot, api_client, user_settings_service, artwork_service,
+                                           tagging_service, error_notifier, album_tracker, download_rate_limiter)
 
-    download_service = DownloadService(bot, api_client, user_settings_service, artwork_service,
-                                       tagging_service, error_notifier, album_tracker, download_rate_limiter)
+        await lyrics_service.init_db()
+        logger.info("ABRAAVA Crawler initialized and starting poll loop...")
 
-    await lyrics_service.init_db()
-    logger.info("ABRAAVA Crawler initialized and starting poll loop...")
+        while True:
+            try:
+                # Poll for pending downloads
+                queue_resp = await get_download_queue(status="pending", limit=5)
+                if not queue_resp or not queue_resp.get("success") or not queue_resp.get("items"):
+                    logger.debug("No pending downloads found. Sleeping...")
+                    await asyncio.sleep(30)
+                    continue
 
-    while True:
-        try:
-            # Poll for pending downloads
-            queue_resp = await get_download_queue(status="pending", limit=5)
-            if not queue_resp or not queue_resp.get("success") or not queue_resp.get("items"):
-                logger.debug("No pending downloads found. Sleeping...")
-                await asyncio.sleep(30)
-                continue
+                items = queue_resp.get("items", [])
+                for item in items:
+                    download_id = item.get("download_id")
+                    track_id = item.get("trackId")
+                    quality = item.get("quality", "192")
 
-            items = queue_resp.get("items", [])
-            for item in items:
-                download_id = item.get("download_id")
-                track_id = item.get("trackId")
-                quality = item.get("quality", "192")
+                    logger.info(f"Processing download {download_id} for track {track_id}")
 
-                logger.info(f"Processing download {download_id} for track {track_id}")
+                    # Update status to downloading
+                    await update_download_status(download_id, "downloading")
 
-                # Update status to downloading
-                await update_download_status(download_id, "downloading")
+                    # Use a dummy user_id (Admin ID)
+                    user_id = 234591600
 
-                # Use a dummy user_id (Admin ID)
-                user_id = 234591600
+                    # Process track
+                    try:
+                        # 1. Fetch metadata
+                        track_data = await get_track(track_id)
+                        if not track_data or not track_data.get("results"):
+                            raise Exception("Track data not found")
 
-                # Download and send
-                try:
-                    _, success = await download_service.download_and_send_track(
-                        chat_id=TARGET_CHANNEL_ID,
-                        track_id=track_id,
-                        user_id=user_id,
-                        selected_quality=quality,
-                        silent=True
-                    )
+                        track = track_data["results"][0]
 
-                    if success:
-                        logger.info(f"Successfully processed download {download_id}")
-                        await update_download_status(download_id, "completed")
-                    else:
-                        logger.error(f"Failed to process download {download_id}")
-                        await update_download_status(download_id, "failed", error_message="Download or upload failed")
-                except Exception as e:
-                    logger.exception(f"Error processing download {download_id}: {e}")
-                    await update_download_status(download_id, "failed", error_message=str(e))
+                        # 2. Upload Artwork
+                        artwork_url = track.get("artworkUrl", track.get("artworkUrl100"))
+                        if artwork_url:
+                            artwork_bytes = await artwork_service.get_artwork_for_display("collection", track.get("collectionId") or track_id, artwork_url, user_id)
+                            if artwork_bytes:
+                                caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
+                                await artwork_service.send_artwork_photo(bot, TARGET_CHANNEL_ID, artwork_bytes, caption,
+                                                                         entity_type="collection", entity_id=track.get("collectionId") or track_id,
+                                                                         user_id=user_id, silent=True)
 
-                # Small delay between tracks to avoid rate limiting
-                await asyncio.sleep(5)
+                        # 3. Upload Preview
+                        if track.get("previewUrl"):
+                            await send_voice_preview(bot, TARGET_CHANNEL_ID, track_id, user_id, silent=True)
 
-        except Exception as e:
-            logger.exception(f"Crawler loop error: {e}")
-            await asyncio.sleep(60)
+                        # 4. Download and Send Audio
+                        _, success = await download_service.download_and_send_track(
+                            chat_id=TARGET_CHANNEL_ID,
+                            track_id=track_id,
+                            user_id=user_id,
+                            selected_quality=quality,
+                            silent=True
+                        )
+
+                        if success:
+                            logger.info(f"Successfully processed download {download_id}")
+                            await update_download_status(download_id, "completed")
+                        else:
+                            logger.error(f"Failed to process download {download_id}")
+                            await update_download_status(download_id, "failed", error_message="Download or upload failed")
+                    except Exception as e:
+                        logger.exception(f"Error processing download {download_id}: {e}")
+                        await update_download_status(download_id, "failed", error_message=str(e))
+
+                    # Small delay between tracks to avoid rate limiting
+                    await asyncio.sleep(5)
+
+            except Exception as e:
+                logger.exception(f"Crawler loop error: {e}")
+                await asyncio.sleep(60)
 
 def signal_handler(sig, frame):
     sys.exit(0)

@@ -8,6 +8,7 @@ import asyncio
 logger = logging.getLogger("ABRAAVA:MESSAGES")
 
 def _prepare_markup(reply_markup, no_close, show_info=False, task_id=None, show_cancel=False):
+    if reply_markup is False: return None
     if reply_markup is None: reply_markup = []
     if isinstance(reply_markup, list):
         # Create a deep copy to avoid modifying the original list passed by reference

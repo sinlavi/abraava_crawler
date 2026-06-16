@@ -46,7 +46,8 @@ class ArtworkService:
         try:
             if not entity_id or not file_id: return False
 
-            artwork_url = f'https://tapi.bale.ai/file/bot<token>/{file_id}'
+            from core.config import BOT_TOKEN
+            artwork_url = f'https://tapi.bale.ai/file/bot{BOT_TOKEN}/{file_id}'
             result = await set_mirror(entity_type, str(entity_id), 'artworkUrl', artwork_url)
             return bool(result)
         except Exception as e:
@@ -89,13 +90,14 @@ class ArtworkService:
     async def send_artwork_photo(self, bot: Client, chat_id: int, artwork_data: Union[str, bytes],
                                   caption: str, reply_markup=None,
                                   entity_type: str = None, entity_id: int = None,
-                                  user_id: int = None):
+                                  user_id: int = None, silent: bool = False):
         try:
             from utils.messages import _prepare_markup, FOOTER, send_message
-            markup = _prepare_markup(reply_markup, False)
+            markup = _prepare_markup(reply_markup if not silent else False, False)
 
             try:
-                await bot.send_chat_action(chat_id, "upload_photo")
+                if not silent:
+                    await bot.send_chat_action(chat_id, "upload_photo")
                 if isinstance(artwork_data, str):
                     msg = await bot.send_photo(chat_id, photo=artwork_data, caption=f"{caption}{FOOTER}", reply_markup=markup)
                 else:
@@ -110,7 +112,7 @@ class ArtworkService:
             except Exception as e:
                 logger.warning(f"Failed to send artwork: {e}")
                 # Ask user if they want to force download/upload or skip
-                if user_id:
+                if user_id and not silent:
                     self.auto_download_mode[user_id] = time.time() + 900 # 15 mins
                     text = f"⚠️ *خطا در نمایش کاور*\nآیا مایلید مجدداً تلاش شود؟ (در صورت تایید کاور مستقیماً دانلود و آپلود می‌شود)"
                     retry_markup = [

@@ -143,11 +143,14 @@ class DownloadService:
             try:
                 status_msg = await self._update_status(chat_id, status_msg, "📤 *در حال ارسال فایل از حافظه کش...*",
                                                        status_prefix, reply_markup, is_batch, silent=silent)
-                markup = self._build_audio_markup(track_id, track.get("trackViewUrl"), user_id=user_id)
-                await self.bot.send_chat_action(chat_id, "upload_voice")
+                markup = self._build_audio_markup(track_id, track.get("trackViewUrl"), user_id=user_id) if not silent else None
+                if not silent:
+                    await self.bot.send_chat_action(chat_id, "upload_voice")
                 logger.info(f"Sending cached audio: {track.get('trackName')} ({quality_value}kbps)")
+
+                reply_markup = InlineKeyboard(*markup) if markup else None
                 await self.bot.send_audio(chat_id, audio=audio_cache, caption=caption,
-                                          reply_markup=InlineKeyboard(*markup))
+                                          reply_markup=reply_markup)
                 if not is_batch: await safe_delete(status_msg)
                 await self.api_client.log_download(user_id, str(track_id), track.get('trackName', ''),
                                                    track.get('artistName', ''), track.get('collectionName', ''),
@@ -215,15 +218,19 @@ class DownloadService:
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آپلود روی سرورهای ابری...*",
                                                        status_prefix, reply_markup, is_batch, silent=silent)
 
-                markup = self._build_audio_markup(track_id, track.get("trackViewUrl"), user_id=user_id)
+                markup = self._build_audio_markup(track_id, track.get("trackViewUrl"), user_id=user_id) if not silent else None
                 with open(mp3_path, 'rb') as f:
-                    await self.bot.send_chat_action(chat_id, "upload_voice")
+                    if not silent:
+                        await self.bot.send_chat_action(chat_id, "upload_voice")
                     logger.info(f"Uploading fresh audio: {track.get('trackName')} ({quality_value}kbps)")
+
+                    reply_markup = InlineKeyboard(*markup) if markup else None
                     msg = await self.bot.send_audio(chat_id, audio=f, caption=caption,
-                                                    reply_markup=InlineKeyboard(*markup))
+                                                    reply_markup=reply_markup)
                     if msg and track_id:
+                        from core.config import BOT_TOKEN
                         await set_mirror('track', str(track_id), 'audioUrl',
-                                         f'https://tapi.bale.ai/file/bot<token>/{msg.audio.id}',
+                                         f'https://tapi.bale.ai/file/bot{BOT_TOKEN}/{msg.audio.id}',
                                          quality=quality_value)
 
                 file_size = os.path.getsize(mp3_path)
