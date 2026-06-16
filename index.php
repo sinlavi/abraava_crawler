@@ -1344,39 +1344,54 @@ function handleDownloadUpdate(SQLite3 $db, array $params): array {
 
     // 2. Build Update Clause
     $updates = [];
-    $bindings = [];
+    $updateBindings = [];
     if ($status !== null && $status !== '') {
         $allowed = [DOWNLOAD_STATUS_PENDING, DOWNLOAD_STATUS_DOWNLOADING, DOWNLOAD_STATUS_PAUSED, DOWNLOAD_STATUS_COMPLETED, DOWNLOAD_STATUS_FAILED, DOWNLOAD_STATUS_STOPPED];
         if (!in_array($status, $allowed)) throw new Exception('Invalid status', 400);
-        $updates[] = "status = :status";
-        $bindings[':status'] = $status;
+        $updates[] = "status = ?";
+        $updateBindings[] = $status;
         if ($status === DOWNLOAD_STATUS_DOWNLOADING) $updates[] = "startedAt = COALESCE(startedAt, datetime('now'))";
         if ($status === DOWNLOAD_STATUS_COMPLETED) {
             $updates[] = "completedAt = datetime('now')";
             $updates[] = "errorMessage = NULL";
         }
     }
-    if ($filePath !== null) { $updates[] = "filePath = :filePath"; $bindings[':filePath'] = $filePath; }
+    if ($filePath !== null) {
+        $updates[] = "filePath = ?";
+        $updateBindings[] = $filePath;
+    }
     if ($errorMessage !== null) {
-        $updates[] = "errorMessage = :errorMessage";
-        $bindings[':errorMessage'] = $errorMessage;
-        if ($status === null) { $updates[] = "status = :failStatus"; $bindings[':failStatus'] = DOWNLOAD_STATUS_FAILED; }
+        $updates[] = "errorMessage = ?";
+        $updateBindings[] = $errorMessage;
+        if ($status === null) {
+            $updates[] = "status = ?";
+            $updateBindings[] = DOWNLOAD_STATUS_FAILED;
+        }
     }
 
     if (empty($updates)) throw new Exception('Nothing to update', 400);
 
     // 3. Execution
-    $placeholders = implode(',', array_fill(0, count($targetIds), '?'));
-    $sql = "UPDATE download_queue SET " . implode(', ', $updates) . " WHERE id IN ($placeholders)";
-    $stmt = $db->prepare($sql);
-    
-    // Bind data
-    foreach ($bindings as $key => $val) $stmt->bindValue($key, $val);
-    
-    // Bind IDs (the bug fix: ensured this loop was correct and applied to the final stmt)
-    foreach ($targetIds as $i => $id) $stmt->bindValue($i + count($bindings) + 1, $id, SQLITE3_INTEGER);
-    
-    $result = $stmt->execute();
+    $db->exec('BEGIN TRANSACTION');
+    try {
+        $placeholders = implode(',', array_fill(0, count($targetIds), '?'));
+        $sql = "UPDATE download_queue SET " . implode(', ', $updates) . " WHERE id IN ($placeholders)";
+        $stmt = $db->prepare($sql);
+
+        $pos = 1;
+        foreach ($updateBindings as $val) {
+            $stmt->bindValue($pos++, $val, is_int($val) ? SQLITE3_INTEGER : SQLITE3_TEXT);
+        }
+        foreach ($targetIds as $id) {
+            $stmt->bindValue($pos++, $id, SQLITE3_INTEGER);
+        }
+
+        $result = $stmt->execute();
+        $db->exec('COMMIT');
+    } catch (Exception $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
     return ['success' => true, 'updated_count' => count($targetIds), 'message' => 'Updated successfully'];
 }
 /**

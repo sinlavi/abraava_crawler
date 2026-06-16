@@ -73,34 +73,10 @@ class iTunesSQLiteCache:
 
 _itunes_cache = iTunesSQLiteCache()
 
-ALTERNATIVE_ENDPOINTS = [ITUNES_BASE_URL, "https://itunes.apple.com", "https://ax.itunes.apple.com",
-                         "https://buy.itunes.apple.com"]
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
-
-
-class iTunesEndpointManager:
-    def __init__(self, endpoints: List[str]):
-        self.endpoints = endpoints
-        self.current_index = 0
-        self.failures = {e: 0 for e in endpoints}
-
-    def get_endpoint(self) -> str:
-        return self.endpoints[self.current_index]
-
-    def report_failure(self, endpoint: str):
-        self.failures[endpoint] += 1
-        if self.failures[endpoint] >= 2:
-            self.current_index = (self.current_index + 1) % len(self.endpoints)
-            logger.warning(f"iTunes endpoint switched to {self.get_endpoint()}")
-
-    def report_success(self, endpoint: str):
-        self.failures[endpoint] = 0
-
-
-endpoint_manager = iTunesEndpointManager(ALTERNATIVE_ENDPOINTS)
 
 
 async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = False,
@@ -108,7 +84,11 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
                        official: bool = False, quality: str = None) -> Optional[Dict[str, Any]]:
     params = params or {}
     if quality: params["quality"] = quality
-    if method == "GET" and not bypass_cache and not OFFLINE_MODE:
+
+    # Exclude download queue from cache to prevent re-processing same items
+    can_cache = method == "GET" and not any(endpoint.startswith(p) for p in ["download", "mirror"])
+
+    if can_cache and not bypass_cache and not OFFLINE_MODE:
         cached = await _itunes_cache.get(endpoint, params)
         if cached: return cached
 
@@ -116,27 +96,21 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
 
     session = await HttpClient.get_session()
 
-    # Endpoints that are specific to 3rah API and not available on official iTunes
-    is_3rah_specific = any(endpoint.startswith(p) for p in ["mirror", "lyrics", "track/save", "song/save", "collection/save", "album/save", "artist/save", "download"])
-    max_attempts = 1 if is_3rah_specific else 3
+    api_path = f"/{endpoint}" if not endpoint.startswith("/") else endpoint
+    url = f"{ITUNES_BASE_URL}{api_path}"
 
-    for attempt in range(max_attempts):
-        if official and not is_3rah_specific:
-            base_url = "https://itunes.apple.com"
-        else:
-            base_url = endpoint_manager.get_endpoint() if not is_3rah_specific else ITUNES_BASE_URL
-        api_path = f"/{endpoint}" if not endpoint.startswith("/") else endpoint
-        url = f"{base_url}{api_path}"
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    logger.info(f"3rah Request [{method}]: {url} - Params: {params}")
 
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        logger.info(f"iTunes/3rah Request [{method}]: {url} - Params: {params}")
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             # Note: HttpClient session already uses ProxyConnector if PROXY is SOCKS
             # We only pass proxy to session call if it's an HTTP proxy
             current_proxy = PROXY if PROXY and not PROXY.startswith("socks") else None
             if method == "GET":
-                async with session.get(url, params=params, headers=headers, ssl=False, proxy=current_proxy, timeout=10) as resp:
-                    logger.info(f"iTunes/3rah Response [{resp.status}]: {url}")
+                async with session.get(url, params=params, headers=headers, ssl=False, proxy=current_proxy, timeout=15) as resp:
+                    logger.info(f"3rah Response [{resp.status}]: {url}")
                     if resp.status == 200:
                         try:
                             data = await resp.json()
@@ -144,22 +118,28 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
                             text = await resp.text()
                             data = json.loads(text)
 
-                        if not is_3rah_specific:
+                        if can_cache:
                             await _itunes_cache.set(endpoint, params, data)
-                            endpoint_manager.report_success(base_url)
                         return data
-                    else:
-                        if not is_3rah_specific: endpoint_manager.report_failure(base_url)
+                    elif resp.status >= 500:
+                        raise Exception(f"Server error: {resp.status}")
             else:
                 async with getattr(session, method.lower())(url, params=params, json=payload, headers=headers,
-                                                            ssl=False, proxy=current_proxy, timeout=10) as resp:
-                    logger.info(f"iTunes/3rah Response [{resp.status}]: {url}")
+                                                            ssl=False, proxy=current_proxy, timeout=15) as resp:
+                    logger.info(f"3rah Response [{resp.status}]: {url}")
                     if resp.status == 200: return await resp.json()
-        except Exception as e:
-            logger.error(f"iTunes fetch failed (attempt {attempt + 1}): {e}")
-            if not is_3rah_specific: endpoint_manager.report_failure(base_url)
+                    elif resp.status >= 500:
+                        raise Exception(f"Server error: {resp.status}")
 
-        if not is_3rah_specific: await asyncio.sleep(0.5)
+            # If status is not 200 and not 5xx, don't retry
+            break
+
+        except Exception as e:
+            logger.warning(f"3rah fetch attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 * (attempt + 1))
+            else:
+                logger.error(f"3rah fetch failed after {max_retries} attempts: {e}")
 
     return None
 
