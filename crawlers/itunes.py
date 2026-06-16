@@ -84,7 +84,11 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
                        official: bool = False, quality: str = None) -> Optional[Dict[str, Any]]:
     params = params or {}
     if quality: params["quality"] = quality
-    if method == "GET" and not bypass_cache and not OFFLINE_MODE:
+
+    # Exclude download queue from cache to prevent re-processing same items
+    can_cache = method == "GET" and not any(endpoint.startswith(p) for p in ["download", "mirror"])
+
+    if can_cache and not bypass_cache and not OFFLINE_MODE:
         cached = await _itunes_cache.get(endpoint, params)
         if cached: return cached
 
@@ -114,16 +118,20 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
                             text = await resp.text()
                             data = json.loads(text)
 
-                        await _itunes_cache.set(endpoint, params, data)
+                        if can_cache:
+                            await _itunes_cache.set(endpoint, params, data)
                         return data
+                    elif resp.status >= 500:
+                        raise Exception(f"Server error: {resp.status}")
             else:
                 async with getattr(session, method.lower())(url, params=params, json=payload, headers=headers,
                                                             ssl=False, proxy=current_proxy, timeout=15) as resp:
                     logger.info(f"3rah Response [{resp.status}]: {url}")
                     if resp.status == 200: return await resp.json()
+                    elif resp.status >= 500:
+                        raise Exception(f"Server error: {resp.status}")
 
-            # If status is not 200, we might want to retry for certain codes,
-            # but for now let's just break if we got a response.
+            # If status is not 200 and not 5xx, don't retry
             break
 
         except Exception as e:

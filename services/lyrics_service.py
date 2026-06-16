@@ -149,15 +149,19 @@ class LyricsService:
             if duration_ms: params["duration"] = int(duration_ms / 1000)
 
             url = "https://lrclib.net/api/get"
-            try:
-                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("instrumental"):
-                            return {"synced": "Instrumental", "plain": "Instrumental"}
-                        return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
-            except Exception as e:
-                logger.debug(f"LRCLIB api/get failed: {e}")
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(url, params=params, headers=headers, timeout=10) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("instrumental"):
+                                return {"synced": "Instrumental", "plain": "Instrumental"}
+                            return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
+                    break
+                except Exception as e:
+                    logger.debug(f"LRCLIB api/get attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1: await asyncio.sleep(1)
 
             # 2. Try search if direct get fails or errors
             search_url = "https://lrclib.net/api/search"
@@ -165,20 +169,24 @@ class LyricsService:
             search_params = {"track_name": title, "artist_name": artist}
             if album: search_params["album_name"] = album
 
-            async with session.get(search_url, params=search_params, headers=headers, timeout=10) as s_resp:
-                if s_resp.status != 200:
-                    # Fallback to general q search
-                    general_params = {"q": f"{title} {artist}"}
-                    async with session.get(search_url, params=general_params, headers=headers, timeout=10) as g_resp:
-                        if g_resp.status == 200:
-                            results = await g_resp.json()
-                        else:
-                            results = []
-                else:
-                    results = await s_resp.json()
+            results = []
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(search_url, params=search_params, headers=headers, timeout=10) as s_resp:
+                        if s_resp.status == 200:
+                            results = await s_resp.json()
+                        elif s_resp.status != 404:
+                            # Fallback to general q search if specific fields failed
+                            general_params = {"q": f"{title} {artist}"}
+                            async with session.get(search_url, params=general_params, headers=headers, timeout=10) as g_resp:
+                                if g_resp.status == 200:
+                                    results = await g_resp.json()
+                    break
+                except Exception as e:
+                    logger.debug(f"LRCLIB search attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1: await asyncio.sleep(1)
 
-                if results:
-                    best_match = None
+            if results:
                     best_score = -1
 
                     target_sec = duration_ms / 1000 if duration_ms else 0
