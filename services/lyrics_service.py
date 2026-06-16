@@ -138,8 +138,9 @@ class LyricsService:
         try:
             from core.http_client import HttpClient
             session = await HttpClient.get_session()
+            headers = {"User-Agent": "ABRAAVA-Crawler/1.1 (https://3rah.ir)"}
 
-            # 1. Try exact match with duration
+            # 1. Try exact match with duration (best for accuracy)
             params = {
                 "track_name": title,
                 "artist_name": artist,
@@ -148,46 +149,65 @@ class LyricsService:
             if duration_ms: params["duration"] = int(duration_ms / 1000)
 
             url = "https://lrclib.net/api/get"
-            async with session.get(url, params=params, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
+            try:
+                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("instrumental"):
+                            return {"synced": "Instrumental", "plain": "Instrumental"}
+                        return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
+            except Exception as e:
+                logger.debug(f"LRCLIB api/get failed: {e}")
 
-            # 2. Try search if direct get fails
+            # 2. Try search if direct get fails or errors
             search_url = "https://lrclib.net/api/search"
-            search_params = {"q": f"{artist} {title}"}
-            async with session.get(search_url, params=search_params, timeout=10) as s_resp:
-                if s_resp.status == 200:
+            # Try searching with explicit fields first for better results
+            search_params = {"track_name": title, "artist_name": artist}
+            if album: search_params["album_name"] = album
+
+            async with session.get(search_url, params=search_params, headers=headers, timeout=10) as s_resp:
+                if s_resp.status != 200:
+                    # Fallback to general q search
+                    general_params = {"q": f"{title} {artist}"}
+                    async with session.get(search_url, params=general_params, headers=headers, timeout=10) as g_resp:
+                        if g_resp.status == 200:
+                            results = await g_resp.json()
+                        else:
+                            results = []
+                else:
                     results = await s_resp.json()
-                    if results:
-                        best_match = None
-                        best_score = -1
 
-                        target_sec = duration_ms / 1000 if duration_ms else 0
+                if results:
+                    best_match = None
+                    best_score = -1
 
-                        for res in results:
-                            score = 0
-                            if res.get("syncedLyrics"): score += 10
-                            if res.get("plainLyrics"): score += 5
+                    target_sec = duration_ms / 1000 if duration_ms else 0
 
-                            # Duration matching
-                            res_dur = res.get("duration", 0)
-                            if target_sec and res_dur:
-                                diff = abs(target_sec - res_dur)
-                                if diff < 2: score += 10
-                                elif diff < 5: score += 5
-                                elif diff > 10: score -= 5
+                    for res in results:
+                        score = 0
+                        if res.get("syncedLyrics"): score += 10
+                        if res.get("plainLyrics"): score += 5
 
-                            if score > best_score:
-                                best_score = score
-                                best_match = res
-                                if score >= 20: break # Good enough match
+                        # Duration matching
+                        res_dur = res.get("duration", 0)
+                        if target_sec and res_dur:
+                            diff = abs(target_sec - res_dur)
+                            if diff < 2: score += 10
+                            elif diff < 5: score += 5
+                            elif diff > 10: score -= 5
 
-                        if best_match:
-                            return {"synced": best_match.get("syncedLyrics"), "plain": best_match.get("plainLyrics")}
+                        if score > best_score:
+                            best_score = score
+                            best_match = res
+                            if score >= 20: break # Good enough match
+
+                    if best_match:
+                        if best_match.get("instrumental"):
+                            return {"synced": "Instrumental", "plain": "Instrumental"}
+                        return {"synced": best_match.get("syncedLyrics"), "plain": best_match.get("plainLyrics")}
             return None
         except Exception as e:
-            logger.error(f"Error fetching lyrics from LRCLIB: {e}")
+            logger.error(f"Error fetching lyrics from LRCLIB: {type(e).__name__}: {e}")
             return None
 
     async def _fetch_from_ytmusic(self, track_id, title, artist):
