@@ -228,9 +228,8 @@ class DownloadService:
                     msg = await self.bot.send_audio(chat_id, audio=f, caption=caption,
                                                     reply_markup=reply_markup)
                     if msg and track_id:
-                        from core.config import BOT_TOKEN
                         await set_mirror('track', str(track_id), 'audioUrl',
-                                         f'https://tapi.bale.ai/file/bot{BOT_TOKEN}/{msg.audio.id}',
+                                         f'https://tapi.bale.ai/file/bot<token>/{msg.audio.id}',
                                          quality=quality_value)
 
                 file_size = os.path.getsize(mp3_path)

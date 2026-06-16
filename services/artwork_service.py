@@ -46,8 +46,7 @@ class ArtworkService:
         try:
             if not entity_id or not file_id: return False
 
-            from core.config import BOT_TOKEN
-            artwork_url = f'https://tapi.bale.ai/file/bot{BOT_TOKEN}/{file_id}'
+            artwork_url = f'https://tapi.bale.ai/file/bot<token>/{file_id}'
             result = await set_mirror(entity_type, str(entity_id), 'artworkUrl', artwork_url)
             return bool(result)
         except Exception as e:

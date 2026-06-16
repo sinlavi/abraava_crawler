@@ -67,8 +67,7 @@ async def send_voice_preview(bot: Client, chat_id: int, track_id: int, user_id: 
                 preview_data.name = f"preview_{track_id}.mp3"
                 msg = await bot.send_voice(chat_id, voice=preview_data, caption=caption, reply_markup=reply_markup)
                 if msg and track_id:
-                    from core.config import BOT_TOKEN
-                    await set_mirror('track', str(track_id), 'previewUrl', f'https://tapi.bale.ai/file/bot{BOT_TOKEN}/{msg.voice.id}')
+                    await set_mirror('track', str(track_id), 'previewUrl', f'https://tapi.bale.ai/file/bot<token>/{msg.voice.id}')
                 if not silent: await safe_delete(status_msg)
             else:
                 if not silent:
