@@ -198,7 +198,6 @@ jobs:
             echo "⚠️ This step requires a personal access token with workflow scope"
             echo "⚠️ Skipping due to token limitations..."
           fi
-
   run-bot:
     needs: clear-history
     permissions:
@@ -225,7 +224,6 @@ jobs:
           key: ffmpeg-static-linux64-${{ runner.os }}-v1
           restore-keys: |
             ffmpeg-static-linux64-${{ runner.os }}-
-
       - name: Download and install FFmpeg static build (if not cached)
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
@@ -252,7 +250,6 @@ jobs:
           
           rm -rf ffmpeg-master-latest-linux64-gpl*
           echo "✅ FFmpeg installed to /usr/local/bin"
-
       - name: Verify FFmpeg installation
         id: verify-ffmpeg
         run: |
@@ -267,7 +264,6 @@ jobs:
             echo "❌ FFmpeg installation failed"
             exit 1
           fi
-
       # ========== WARP (Cloudflare proxy) with caching ==========
       - name: Cache WARP Docker image
         id: cache-warp
@@ -277,14 +273,12 @@ jobs:
           key: warp-image-caomingjun-warp-${{ runner.os }}-v1
           restore-keys: |
             warp-image-caomingjun-warp-${{ runner.os }}-
-
       - name: Load cached WARP image if exists
         if: steps.cache-warp.outputs.cache-hit == 'true'
         run: |
           echo "📦 Loading WARP from cache..."
           docker load < /tmp/warp-image.tar
           echo "✅ WARP loaded from cache"
-
       - name: Pull fresh WARP image if not cached
         if: steps.cache-warp.outputs.cache-hit != 'true'
         run: |
@@ -292,14 +286,12 @@ jobs:
           docker pull caomingjun/warp
           docker save caomingjun/warp -o /tmp/warp-image.tar
           echo "✅ WARP pulled and saved to cache"
-
       - name: Remove old WARP data volume for fresh IP
         continue-on-error: true
         run: |
           docker rm -f warp 2>/dev/null || true
           docker volume rm warp-data 2>/dev/null || true
           echo "🧹 Removed old WARP data"
-
       - name: Start Cloudflare WARP proxy
         id: warp-start
         run: |
@@ -328,7 +320,6 @@ jobs:
           
           echo "🌐 External IP:"
           curl -x socks5h://127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace --max-time 10 | grep "ip=" || echo "⚠️ Could not get IP, but continuing..."
-
       # ========== Python environment ==========
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -338,11 +329,9 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
-
       - name: Upgrade pip
         run: |
           python -m pip install --upgrade pip
-
       - name: Install Python dependencies
         run: |
           if [ -f requirements.txt ]; then
@@ -351,7 +340,6 @@ jobs:
           else
             echo "⚠️ requirements.txt not found"
           fi
-
       # ========== Run bot ==========
       - name: Run bot
         id: bot
@@ -363,7 +351,6 @@ jobs:
         run: |
           echo "🚀 Starting bot..."
           python main.py
-
       # ========== Restart on failure (for all event types, including schedule) ==========
       - name: Restart workflow on failure
         if: failure()   # بدون شرط && github.event_name != 'schedule'
