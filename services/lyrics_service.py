@@ -72,40 +72,54 @@ class LyricsService:
 
         # 1. Check Local Cache
         cached_lyrics = await self._get_cached_lyrics(track_id)
-        if cached_lyrics:
-            logger.info(f"Lyrics found in local cache for {track_id}")
+        if cached_lyrics and (cached_lyrics.get("synced") or "Instrumental" in str(cached_lyrics.get("plain"))):
+            logger.info(f"Synced or Instrumental lyrics found in local cache for {track_id}")
             return cached_lyrics
 
         # 2. Check 3rah API (Central Cache)
+        central_lyrics = None
         try:
             logger.info(f"Checking 3rah central API for lyrics (ID: {track_id})")
             central_lyrics = await get_3rah_lyrics(track_id)
-            if central_lyrics and (central_lyrics.get("synced") or central_lyrics.get("plain")):
-                logger.info(f"Lyrics found in 3rah API for {track_id}")
+            if central_lyrics and (central_lyrics.get("synced") or "Instrumental" in str(central_lyrics.get("plain"))):
+                logger.info(f"Synced or Instrumental lyrics found in 3rah API for {track_id}")
                 # Cache locally for faster subsequent access
                 await self._cache_lyrics(track_id, central_lyrics, title, artist, push_to_central=False)
                 return central_lyrics
         except Exception as e:
             logger.error(f"Error fetching lyrics from 3rah API: {e}")
 
+        # Fallback to whatever we have if LRCLIB fails later
+        best_so_far = cached_lyrics or central_lyrics
+
         # 3. Fetch from LRCLIB
         logger.info(f"Crawling LRCLIB for lyrics: {title} - {artist}")
         lyrics_dict = await self._fetch_from_lrclib(title, artist, album, duration_ms)
 
-        # 4. Fallback to YTMusic
-        if not lyrics_dict or (not lyrics_dict.get("synced") and not lyrics_dict.get("plain")):
-            logger.info(f"LRCLIB failed, falling back to YTMusic: {title} - {artist}")
+        # 4. Fallback to YTMusic (only if LRCLIB failed and we don't even have plain lyrics)
+        if (not lyrics_dict or (not lyrics_dict.get("synced") and not lyrics_dict.get("plain"))) and not best_so_far:
+            logger.info(f"LRCLIB failed and no cache, falling back to YTMusic: {title} - {artist}")
             lyrics_dict = await self._fetch_from_ytmusic(track_id, title, artist)
 
         if lyrics_dict and (lyrics_dict.get("synced") or lyrics_dict.get("plain")):
-            logger.info(f"Lyrics successfully crawled for {track_id}")
-            # 5. Cache it (both locally and on 3rah API)
-            await self._cache_lyrics(track_id, lyrics_dict, title, artist)
-        else:
-            logger.warning(f"No lyrics found for {track_id} from any source. Marking as Instrumental/Not exists.")
-            lyrics_dict = {"synced": "Instrumental/Not exists", "plain": "Instrumental/Not exists"}
-            # Cache the "not found" state
-            await self._cache_lyrics(track_id, lyrics_dict, title, artist)
+            # Check if this is an upgrade (found synced lyrics when we only had plain)
+            is_upgrade = lyrics_dict.get("synced") and not (best_so_far and best_so_far.get("synced"))
+
+            if is_upgrade or not best_so_far:
+                logger.info(f"Lyrics successfully crawled (Upgrade: {is_upgrade}) for {track_id}")
+                # Cache it (both locally and on 3rah API)
+                await self._cache_lyrics(track_id, lyrics_dict, title, artist)
+            return lyrics_dict
+
+        if best_so_far:
+            logger.info(f"LRCLIB/YTMusic failed, returning best available cached lyrics for {track_id}")
+            return best_so_far
+
+        # Final fallback: Mark as Not exists
+        logger.warning(f"No lyrics found for {track_id} from any source. Marking as Instrumental/Not exists.")
+        lyrics_dict = {"synced": "Instrumental/Not exists", "plain": "Instrumental/Not exists"}
+        # Cache the "not found" state
+        await self._cache_lyrics(track_id, lyrics_dict, title, artist)
 
         return lyrics_dict
 
@@ -175,8 +189,19 @@ class LyricsService:
                     async with session.get(search_url, params=search_params, headers=headers, timeout=10) as s_resp:
                         if s_resp.status == 200:
                             results = await s_resp.json()
-                        elif s_resp.status != 404:
-                            # Fallback to general q search if specific fields failed
+                            if results: break # Found something
+
+                        # Fallback 1: Try without album if album was provided and no results
+                        if not results and album:
+                            logger.info(f"LRCLIB search with album failed, trying without album: {title} - {artist}")
+                            no_album_params = {"track_name": title, "artist_name": artist}
+                            async with session.get(search_url, params=no_album_params, headers=headers, timeout=10) as na_resp:
+                                if na_resp.status == 200:
+                                    results = await na_resp.json()
+                                    if results: break
+
+                        # Fallback 2: General q search
+                        if not results and s_resp.status != 404:
                             general_params = {"q": f"{title} {artist}"}
                             async with session.get(search_url, params=general_params, headers=headers, timeout=10) as g_resp:
                                 if g_resp.status == 200:
