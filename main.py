@@ -113,7 +113,7 @@ async def run_crawler():
             try:
                 # Poll for pending downloads
                 # Increase limit to 10 for concurrent processing
-                queue_resp = await get_download_queue(status="pending", limit=10)
+                queue_resp = await get_download_queue(status="pending", limit=100)
                 if not queue_resp or not queue_resp.get("success") or not queue_resp.get("items"):
                     logger.debug("No pending downloads found. Sleeping...")
                     await asyncio.sleep(30)
