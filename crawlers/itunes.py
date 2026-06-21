@@ -236,7 +236,7 @@ async def save_metadata(entity_type: str, data: Union[Dict, List]) -> Optional[D
     return await fetch_itunes(endpoint, method="POST", payload=data)
 
 
-async def get_download_queue(status: str = "pending", limit: int = 10) -> Optional[Dict[str, Any]]:
+async def get_download_queue(status: str = "pending", limit: int = 60) -> Optional[Dict[str, Any]]:
     logger.info(f"Fetching download queue with status: {status}")
     return await fetch_itunes("download/queue", params={"status": status, "limit": limit})
 
