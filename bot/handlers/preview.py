@@ -1,22 +1,19 @@
 import asyncio
 import io
 from typing import Optional
-from balethon import Client
-from balethon.objects import Message
+from telegram import Bot, Message
 from core.logger import logger
 from crawlers.utils import get_track
 from crawlers.itunes import get_cached_preview, set_mirror
 from utils.messages import send_message, edit_message, safe_delete
 from core.http_client import HttpClient
 from core.config import FOOTER
-from bot.keyboards import create_close_button
-from balethon.objects import InlineKeyboard, InlineKeyboardButton
 
 async def _update_preview_status(bot, chat_id, msg, text):
     await safe_delete(msg)
-    return await send_message(bot, chat_id, text, show_cancel=True)
+    return await send_message(bot, chat_id, text)
 
-async def send_voice_preview(bot: Client, chat_id: int, track_id: int, user_id: int = None, reply_to=None, silent=False):
+async def send_voice_preview(bot: Bot, chat_id: int, track_id: int, user_id: int = None, reply_to=None, silent=False):
     status_msg = None
     if not silent:
         status_msg = await send_message(bot, chat_id, "⏳ *در حال دریافت پیش‌نمایش...*", reply_to_message_id=reply_to)
@@ -37,23 +34,11 @@ async def send_voice_preview(bot: Client, chat_id: int, track_id: int, user_id: 
 
         caption = f"🎧 *پیش‌نمایش آهنگ {track.get('trackName')}*\n\n{FOOTER}"
 
-        from utils.helpers import generate_deep_link
-        markup = []
-        if not silent:
-            source_url = track.get("trackViewUrl") or track.get("previewUrl")
-            if track_id:
-                markup.append([InlineKeyboardButton(text="📋 کپی پیوند", copy_text=generate_deep_link("track", track_id))])
-            if source_url:
-                markup.append([InlineKeyboardButton(text="🌐 اطلاعات بیشتر", url=source_url)])
-            markup.append([create_close_button(user_id)])
-
-        reply_markup = InlineKeyboard(*markup) if not silent else None
-
         # Attempt 1: From Cache (mirror)
         preview_cache = await get_cached_preview(track_id)
         if preview_cache:
             try:
-                await bot.send_voice(chat_id, voice=preview_cache, caption=caption, reply_markup=reply_markup)
+                await bot.send_voice(chat_id, voice=preview_cache, caption=caption)
                 if not silent: await safe_delete(status_msg)
                 return status_msg
             except Exception as e:
@@ -65,9 +50,9 @@ async def send_voice_preview(bot: Client, chat_id: int, track_id: int, user_id: 
             if resp.status == 200:
                 preview_data = io.BytesIO(await resp.read())
                 preview_data.name = f"preview_{track_id}.mp3"
-                msg = await bot.send_voice(chat_id, voice=preview_data, caption=caption, reply_markup=reply_markup)
+                msg = await bot.send_voice(chat_id, voice=preview_data, caption=caption)
                 if msg and track_id:
-                    await set_mirror('track', str(track_id), 'previewUrl', f'https://tapi.bale.ai/file/bot<token>/{msg.voice.id}')
+                    await set_mirror('track', str(track_id), 'previewUrl', f'https://api.telegram.org/file/bot<token>/{msg.voice.file_id}')
                 if not silent: await safe_delete(status_msg)
             else:
                 if not silent:

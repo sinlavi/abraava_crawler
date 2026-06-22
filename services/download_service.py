@@ -4,8 +4,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import Optional, Union, List
-from balethon import Client
-from balethon.objects import Message, InlineKeyboardButton, InlineKeyboard
+from telegram import Bot, Message
 from core.logger import logger
 from core.config import OFFLINE_MODE, DEFAULT_QUALITY, FOOTER
 from core.http_client import HttpClient
@@ -15,15 +14,13 @@ from crawlers.youtube import search_youtube_track, download_audio
 from crawlers.itunes import get_cached_audio, set_mirror, get_cached_artwork, get_mirror
 from utils.helpers import get_high_res_artwork, format_duration, generate_deep_link
 from utils.messages import send_message, edit_message, safe_delete
-from bot.keyboards import create_close_button
 
 
 class DownloadService:
-    def __init__(self, bot, api_client, user_settings_service, artwork_service,
+    def __init__(self, bot, api_client, artwork_service,
                  tagging_service, error_notifier, album_tracker, download_rate_limiter):
         self.bot = bot
         self.api_client = api_client
-        self.user_settings_service = user_settings_service
         self.artwork_service = artwork_service
         self.tagging_service = tagging_service
         self.error_notifier = error_notifier
@@ -31,7 +28,7 @@ class DownloadService:
         self.download_rate_limiter = download_rate_limiter
         self.download_semaphore = asyncio.Semaphore(20)
 
-    async def _update_status(self, chat_id, status_msg, text, status_prefix="", reply_markup=None, is_batch=False, silent=False):
+    async def _update_status(self, chat_id, status_msg, text, status_prefix="", is_batch=False, silent=False):
         if silent:
             return status_msg
 
@@ -41,36 +38,14 @@ class DownloadService:
             full_text = text
 
         if status_msg:
-            await edit_message(status_msg, full_text, reply_markup=reply_markup, show_cancel=not is_batch)
+            await edit_message(status_msg, full_text)
             return status_msg
-        return await send_message(self.bot, chat_id, full_text, reply_markup=reply_markup, show_cancel=not is_batch)
-
-    @staticmethod
-    def estimate_mp3_size(duration_ms: int, bitrate_kbps: str) -> float:
-        try:
-            bitrate = int(bitrate_kbps)
-            duration_sec = duration_ms / 1000
-            # bitrate (kbps) * duration (s) / 8 = Size (KB)
-            size_mb = (bitrate * duration_sec) / (8 * 1024)
-            return round(size_mb, 2)
-        except:
-            return 0.0
-
-    def get_safe_quality(self, duration_ms: int, preferred_quality: str) -> Optional[str]:
-        qualities = ["320", "192", "128"]
-        if preferred_quality not in qualities:
-            preferred_quality = "192"
-
-        idx = qualities.index(preferred_quality)
-        for q in qualities[idx:]:
-            if self.estimate_mp3_size(duration_ms, q) < 19.5: # Stay safely under 20MB
-                return q
-        return None
+        return await send_message(self.bot, chat_id, full_text)
 
     async def download_and_send_track(self, chat_id, track_id, user_id, status_msg=None,
                                       is_batch=False, album_cover_bytes=None, collection_id=None,
                                       selected_quality=None, track_name_hint=None, track_index=None,
-                                      status_prefix="", reply_markup=None, skip_size_check=False,
+                                      status_prefix="", skip_size_check=True,
                                       silent=False):
 
         # If no status_msg provided, use the first update to create it to avoid redundant send/delete
@@ -78,15 +53,15 @@ class DownloadService:
             prefix = f"({track_index}) " if track_index else ""
             hint = f" {track_name_hint}" if track_name_hint else ""
             initial_text = f"🔍 *{prefix}در حال دریافت اطلاعات آهنگ{hint}...*"
-            status_msg = await self._update_status(chat_id, status_msg, initial_text, status_prefix, reply_markup,
+            status_msg = await self._update_status(chat_id, status_msg, initial_text, status_prefix,
                                                    is_batch, silent=silent)
         else:
             status_msg = await self._update_status(chat_id, status_msg, "🔍 *در حال دریافت اطلاعات آهنگ...*",
-                                                   status_prefix, reply_markup, is_batch, silent=silent)
+                                                   status_prefix, is_batch, silent=silent)
         track_data = await get_track(track_id)
         if not track_data or not track_data.get("results"):
             status_msg = await self._update_status(chat_id, status_msg, "خطا در دریافت اطلاعات آهنگ.", status_prefix,
-                                                   reply_markup, is_batch, silent=silent)
+                                                   is_batch, silent=silent)
             return status_msg, False
 
         track = track_data["results"][0]
@@ -100,40 +75,10 @@ class DownloadService:
             if album_name:
                 status_prefix += f"\n💿 *آلبوم:* {album_name}"
 
-        settings = await self.user_settings_service.get_settings(user_id)
-
-        quality_value = selected_quality or settings.download_quality.value
+        quality_value = selected_quality or DEFAULT_QUALITY
         if quality_value == "ask": quality_value = "192"
 
-        # 20MB Size Check
         duration_ms = int(track.get('trackTimeMillis') or 0)
-        if not skip_size_check and duration_ms > 0:
-            est_size = self.estimate_mp3_size(duration_ms, quality_value)
-            if est_size >= 19.5:
-                safe_q = self.get_safe_quality(duration_ms, quality_value)
-                if is_batch or silent:
-                    if safe_q:
-                        logger.info(f"Auto-falling back to {safe_q}kbps for track {track_id} (est: {est_size}MB)")
-                        quality_value = safe_q
-                        status_prefix = f"⚠️ کاهش کیفیت به {safe_q} جهت رعایت محدودیت حجم\n{status_prefix}"
-                    else:
-                        status_msg = await self._update_status(chat_id, status_msg, "❌ حجم آهنگ بیش از حد مجاز است.", status_prefix, reply_markup, is_batch, silent=silent)
-                        return status_msg, False
-                else:
-                    if safe_q:
-                        text = (f"⚠️ *محدودیت حجم بله (۲۰ مگابایت)*\n\n"
-                                f"حجم تخمینی این آهنگ با کیفیت {quality_value}kbps حدود {est_size} مگابایت است که بیش از حد مجاز می‌باشد.\n"
-                                f"آیا مایلید با کیفیت {safe_q}kbps دانلود شود؟")
-                        markup = [
-                            [InlineKeyboardButton(text=f"✅ بله ({safe_q} kbps)", callback_data=f"dl_fb:{safe_q}:{track_id}:u{user_id}")],
-                            [InlineKeyboardButton(text="❌ لغو", callback_data="close")]
-                        ]
-                        await edit_message(status_msg, text, reply_markup=InlineKeyboard(*markup))
-                        return status_msg, False
-                    else:
-                        status_msg = await self._update_status(chat_id, status_msg, "❌ متأسفانه حجم این آهنگ حتی با کمترین کیفیت بیش از ۲۰ مگابایت است و امکان ارسال در بله وجود ندارد.", status_prefix, reply_markup, is_batch)
-                        return status_msg, False
-
         caption = self._build_caption(track, quality_value)
 
         # Check cache
@@ -142,15 +87,12 @@ class DownloadService:
             logger.info(f"Using cached audio for track {track_id} (quality: {quality_value}) -> {audio_cache}")
             try:
                 status_msg = await self._update_status(chat_id, status_msg, "📤 *در حال ارسال فایل از حافظه کش...*",
-                                                       status_prefix, reply_markup, is_batch, silent=silent)
-                markup = self._build_audio_markup(track_id, track.get("trackViewUrl"), user_id=user_id) if not silent else None
+                                                       status_prefix, is_batch, silent=silent)
                 if not silent:
                     await self.bot.send_chat_action(chat_id, "upload_voice")
                 logger.info(f"Sending cached audio: {track.get('trackName')} ({quality_value}kbps)")
 
-                reply_markup = InlineKeyboard(*markup) if markup else None
-                await self.bot.send_audio(chat_id, audio=audio_cache, caption=caption,
-                                          reply_markup=reply_markup)
+                await self.bot.send_audio(chat_id, audio=audio_cache, caption=caption)
                 if not is_batch: await safe_delete(status_msg)
                 await self.api_client.log_download(user_id, str(track_id), track.get('trackName', ''),
                                                    track.get('artistName', ''), track.get('collectionName', ''),
@@ -163,14 +105,15 @@ class DownloadService:
 
         if OFFLINE_MODE:
             status_msg = await self._update_status(chat_id, status_msg, "بات در حالت آفلاین است.", status_prefix,
-                                                   reply_markup, is_batch, silent=silent)
+                                                   is_batch, silent=silent)
             return status_msg, False
 
         # Download from YouTube
         cover_bytes = album_cover_bytes
-        if settings.show_artwork and cover_bytes is None:
+        # show_artwork is now effectively always True as settings are removed
+        if cover_bytes is None:
             status_msg = await self._update_status(chat_id, status_msg, "🖼️ *در حال دریافت کاور آهنگ...*",
-                                                   status_prefix, reply_markup, is_batch, silent=silent)
+                                                   status_prefix, is_batch, silent=silent)
             cover_bytes = await self.artwork_service.get_artwork_bytes(track.get('collectionId') or track_id,
                                                                        track.get('artworkUrl100'))
 
@@ -181,7 +124,7 @@ class DownloadService:
 
         if not video_url:
             status_msg = await self._update_status(chat_id, status_msg, "🔍 *در حال جستجوی منبع با کیفیت...*",
-                                                   status_prefix, reply_markup, is_batch, silent=silent)
+                                                   status_prefix, is_batch, silent=silent)
             logger.info(f"Searching YouTube for track {track_id}: {track.get('trackName')} - {track.get('artistName')}")
             video_id = await search_youtube_track(track.get("trackName", ""), track.get("artistName", ""),
                                                   track.get("collectionName", ""), (track.get("releaseDate") or "")[:4],
@@ -189,7 +132,7 @@ class DownloadService:
 
             if not video_id:
                 status_msg = await self._update_status(chat_id, status_msg, "❌ منبعی برای ترک خواسته شده پیدا نشد.", status_prefix,
-                                                       reply_markup, is_batch, silent=silent)
+                                                       is_batch, silent=silent)
                 return status_msg, False
 
             video_url = f"https://music.youtube.com/watch?v={video_id}"
@@ -201,7 +144,7 @@ class DownloadService:
 
                 status_msg = await self._update_status(chat_id, status_msg,
                                                        f"⏳ *در حال دانلود با کیفیت {quality_value}kbps...*",
-                                                       status_prefix, reply_markup, is_batch, silent=silent)
+                                                       status_prefix, is_batch, silent=silent)
                 logger.info(f"Downloading from YouTube: {video_url} with quality {quality_value}")
                 await self.bot.send_chat_action(chat_id, "record_voice")
                 mp3_path = await download_audio(video_url, quality=quality_value)
@@ -209,7 +152,7 @@ class DownloadService:
 
                 temp_dir = os.path.dirname(mp3_path)
                 status_msg = await self._update_status(chat_id, status_msg, "🏷️ *در حال تگ‌گذاری فایل...*",
-                                                       status_prefix, reply_markup, is_batch, silent=silent)
+                                                       status_prefix, is_batch, silent=silent)
                 lyrics_dict = await lyrics_service.get_lyrics(track_id, track.get("trackName", ""),
                                                               track.get("artistName", ""), track.get("collectionName"),
                                                               duration_ms=duration_ms)
@@ -217,20 +160,17 @@ class DownloadService:
                 self.tagging_service.tag_mp3(Path(mp3_path), track, cover_bytes, lyrics=lyrics_to_tag)
 
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آپلود روی سرورهای ابری...*",
-                                                       status_prefix, reply_markup, is_batch, silent=silent)
+                                                       status_prefix, is_batch, silent=silent)
 
-                markup = self._build_audio_markup(track_id, track.get("trackViewUrl"), user_id=user_id) if not silent else None
                 with open(mp3_path, 'rb') as f:
                     if not silent:
                         await self.bot.send_chat_action(chat_id, "upload_voice")
                     logger.info(f"Uploading fresh audio: {track.get('trackName')} ({quality_value}kbps)")
 
-                    reply_markup = InlineKeyboard(*markup) if markup else None
-                    msg = await self.bot.send_audio(chat_id, audio=f, caption=caption,
-                                                    reply_markup=reply_markup)
+                    msg = await self.bot.send_audio(chat_id, audio=f, caption=caption)
                     if msg and track_id:
                         await set_mirror('track', str(track_id), 'audioUrl',
-                                         f'https://tapi.bale.ai/file/bot<token>/{msg.audio.id}',
+                                         f'https://api.telegram.org/file/bot<token>/{msg.audio.file_id}',
                                          quality=quality_value)
 
                 file_size = os.path.getsize(mp3_path)
@@ -243,11 +183,8 @@ class DownloadService:
                 return status_msg, True
         except Exception as e:
             logger.error(f"Download error: {e}")
-            retry_markup = [
-                [InlineKeyboardButton(text="🔄 تلاش مجدد", callback_data=f"retry:download_retry:{track_id}:u{user_id}")]]
-            # But since _update_status supports custom reply_markup
             status_msg = await self._update_status(chat_id, status_msg, f"❌ خطا در دانلود {track.get('trackName', '')}",
-                                                   status_prefix, InlineKeyboard(*retry_markup), is_batch, silent=silent)
+                                                   status_prefix, is_batch, silent=silent)
             await self.error_notifier.notify_upload_error(self.bot, str(e))
             return status_msg, False
         finally:
@@ -300,18 +237,3 @@ class DownloadService:
                 caption_lines.append(f"{k}: {v}")
 
         return "\n".join(caption_lines) + f"\n\n{FOOTER}"
-
-    def _build_audio_markup(self, track_id, source_url=None, user_id=None):
-        source_url = source_url or f"https://player.abraava.ir?id={track_id}"
-        is_external = str(track_id).startswith(("yt_", "sc_", "sp_"))
-
-        markup = []
-        if not is_external:
-            markup.append(
-                [InlineKeyboardButton(text="📂 نمایش در مینی اپ", web_app=f"https://player.abraava.ir?id={track_id}")])
-
-        markup.append([InlineKeyboardButton(text="📋 کپی پیوند", copy_text=generate_deep_link("track", track_id))])
-        markup.append([InlineKeyboardButton(text="🌐 اطلاعات بیشتر", url=source_url)])
-        markup.append([create_close_button(user_id)])
-
-        return markup

@@ -1,4 +1,4 @@
-from core.config import BOT_TOKEN, INFO_CHANNEL_ID, OFFLINE_MODE, API_BASE_URL, API_TOKEN, PROXY
+from core.config import TG_TOKEN, INFO_CHANNEL_ID, OFFLINE_MODE, API_BASE_URL, API_TOKEN, PROXY, TARGET_CHAT_ID
 import os
 
 # Set global proxy environment variables
@@ -6,7 +6,8 @@ if PROXY:
     os.environ["HTTP_PROXY"] = PROXY
     os.environ["HTTPS_PROXY"] = PROXY
 
-from balethon import Client
+from telegram import Bot
+from telegram.request import HTTPXRequest
 from core.logger import logger
 from core.http_client import HttpClient
 
@@ -14,7 +15,6 @@ from utils.helpers import get_high_res_artwork
 from crawlers.utils import get_track
 from bot.handlers.preview import send_voice_preview
 from services.api_client import APIClient
-from services.user_settings_service import UserSettingsService
 from services.artwork_service import ArtworkService
 from services.rate_limiter import DownloadRateLimiter
 from services.tracker import AlbumDownloadTracker
@@ -29,8 +29,8 @@ import signal
 import sys
 import time
 
-# Hardcoded channel ID
-TARGET_CHANNEL_ID = 6053683389
+# Target Chat ID from config
+TARGET_CHANNEL_ID = TARGET_CHAT_ID
 
 # Lock to prevent concurrent artwork uploads for the same collection
 artwork_lock = asyncio.Lock()
@@ -60,13 +60,13 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
             coll_id = track.get("collectionId") or track_id
             # Use lock to prevent duplicate concurrent uploads for the same collection
             async with artwork_lock:
+                # We need to adapt ArtworkService or just use it as is if it doesn't strictly depend on balethon for get_cached_artwork_url
                 if not await artwork_service.get_cached_artwork_url("collection", coll_id):
                     artwork_bytes = await artwork_service.get_artwork_for_display("collection", coll_id, artwork_url, user_id)
                     if artwork_bytes:
                         caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
-                        await artwork_service.send_artwork_photo(bot, TARGET_CHANNEL_ID, artwork_bytes, caption,
-                                                                 entity_type="collection", entity_id=coll_id,
-                                                                 user_id=user_id, silent=True)
+                        # Adapt send_artwork_photo if needed, but for now we follow the goal of hardcoding target chat
+                        await bot.send_photo(TARGET_CHANNEL_ID, photo=artwork_bytes, caption=caption)
 
         # 3. Upload Preview
         if track.get("previewUrl"):
@@ -95,15 +95,21 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
 async def run_crawler():
     # Initialize Services
     api_client = APIClient(API_BASE_URL, API_TOKEN)
-    user_settings_service = UserSettingsService(api_client)
-    artwork_service = ArtworkService(api_client, user_settings_service)
+    # user_settings_service removed
+    artwork_service = ArtworkService(api_client, None) # Passed None for user_settings_service
     download_rate_limiter = DownloadRateLimiter()
     album_tracker = AlbumDownloadTracker(api_client)
     tagging_service = TaggingService()
     error_notifier = BaleUploadErrorNotifier(api_client)
 
-    async with Client(token=BOT_TOKEN, proxy=PROXY) as bot:
-        download_service = DownloadService(bot, api_client, user_settings_service, artwork_service,
+    request = None
+    if PROXY:
+        request = HTTPXRequest(proxy=PROXY)
+
+    bot = Bot(token=TG_TOKEN, request=request)
+
+    async with bot:
+        download_service = DownloadService(bot, api_client, artwork_service,
                                            tagging_service, error_notifier, album_tracker, download_rate_limiter)
 
         await lyrics_service.init_db()
