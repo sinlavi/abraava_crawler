@@ -344,7 +344,7 @@ jobs:
       - name: Run bot
         id: bot
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
           OFFLINE_MODE: ${{ secrets.OFFLINE_MODE }}
           DB_CHANNEL_ID: ${{ secrets.DB_CHANNEL_ID }}
           INFO_CHANNEL_ID: ${{ secrets.INFO_CHANNEL_ID }}
