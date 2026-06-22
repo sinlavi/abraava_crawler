@@ -10,7 +10,6 @@ import aiosqlite
 from core.config import ITUNES_BASE_URL, OFFLINE_MODE, PROXY, FOOTER
 from core.logger import logger
 from core.http_client import HttpClient
-from balethon.objects import Message
 from utils.messages import edit_message
 
 
@@ -171,8 +170,8 @@ async def set_mirror(entity_type: str, entity_id: Union[int, str], url_type: str
 
 def extract_file_id(url: Optional[str]) -> Optional[str]:
     if not url: return None
-    if '<token>/' in url:
-        return url.split('<token>/')[-1]
+    if 'bot<token>/' in url:
+        return url.split('bot<token>/')[-1]
     return url
 
 

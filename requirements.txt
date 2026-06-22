@@ -1,4 +1,4 @@
-balethon
+python-telegram-bot
 ytmusicapi
 yt_dlp
 aiosqlite

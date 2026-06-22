@@ -8,9 +8,8 @@ import random
 from pathlib import Path
 from core.logger import logger
 from utils.messages import send_message, edit_message, safe_delete
-from bot.keyboards import create_close_button
-from balethon.objects import InlineKeyboardButton, InlineKeyboard
 from core.config import PROXY, FOOTER
+from telegram import Bot
 
 # ── User‑agent list (Same as youtube crawler) ────────────────────
 USER_AGENTS = [
@@ -101,56 +100,9 @@ class DirectDownloadService:
                 continue
         return None
 
-    async def ask_confirmation(self, chat_id, url, user_id=None, reply_to=None):
-        # This method is now mostly a fallback for non-YouTube/non-SoundCloud direct links
-        # that couldn't be parsed into IDs.
-        status_msg = await send_message(self.bot, chat_id, "⏳ *در حال دریافت اطلاعات از پیوند...*", reply_to_message_id=reply_to)
-        meta = await self.get_metadata(url)
-        if not meta:
-            status_msg = await edit_message(status_msg, "❌ خطا در دریافت اطلاعات پیوند.")
-            return
-
-        from utils.helpers import format_duration
-        duration_ms = int(meta.get('duration') or 0) * 1000
-
-        fields = {
-            "🎵 نام آهنگ": f"[{meta.get('title')}]({url})" if meta.get('title') else None,
-            "🎤 نام هنرمند": meta.get('uploader'),
-            "💿 نام آلبوم": meta.get('album'),
-            "📅 سال انتشار": meta.get('upload_date', '')[:4],
-            "⏱️ مدت زمان": format_duration(duration_ms) if duration_ms > 0 else None
-        }
-
-        caption_lines = ["🎵 *اطلاعات یافت شده:*\n"]
-        for k, v in fields.items():
-            if v and str(v).strip() and "Unknown" not in str(v) and "نامشخص" not in str(v) and "None" not in str(v):
-                caption_lines.append(f"{k}: {v}")
-
-        caption_lines.append(f"\nآیا مایل به دانلود این ترک هستید؟")
-        text = "\n".join(caption_lines)
-
-        from bot.handlers.callbacks import store_direct_link
-        link_id = await store_direct_link(url)
-
-        markup = [
-            [InlineKeyboardButton(text="✅ بله، دانلود کن", callback_data=f"confirm_dl:{link_id}:u{user_id}")],
-            [create_close_button(user_id)]
-        ]
-
-        if meta.get("thumbnail"):
-            try:
-                await self.bot.send_chat_action(chat_id, "upload_photo")
-                await self.bot.send_photo(chat_id, photo=meta["thumbnail"], caption=f"{text}{FOOTER}", reply_markup=InlineKeyboard(*markup))
-                await safe_delete(status_msg)
-            except Exception as e:
-                logger.warning(f"Failed to send thumbnail: {e}")
-                status_msg = await edit_message(status_msg, text, reply_markup=InlineKeyboard(*markup))
-        else:
-            status_msg = await edit_message(status_msg, text, reply_markup=InlineKeyboard(*markup))
-
     async def _update_status(self, chat_id, msg, text, reply_markup=None):
         await safe_delete(msg)
-        return await send_message(self.bot, chat_id, text, reply_markup=reply_markup, show_cancel=True)
+        return await send_message(self.bot, chat_id, text)
 
     async def download_direct(self, chat_id, url, user_id, quality="192"):
         status_msg = await send_message(self.bot, chat_id, f"⏳ *در حال شروع دانلود...*")
@@ -197,9 +149,6 @@ class DirectDownloadService:
                 self.tagging_service.tag_mp3(mp3_path, track_data, lyrics=lyrics_to_tag)
 
                 track_name = track_data['trackName']
-                if url:
-                    # In direct download we might not have a bot ID yet, but let's use the source URL for consistency if no ID.
-                    track_name = f"[{track_name}]({url})"
 
                 fields = {
                     "🎵 نام آهنگ": track_name,
@@ -216,15 +165,9 @@ class DirectDownloadService:
                 caption = "\n".join(caption_lines)
 
                 with open(mp3_path, 'rb') as f:
-                    from utils.helpers import generate_deep_link
-                    # For direct download, we might not have a reliable ID yet, but let's try to get one if meta had it
-                    # or just use close button as fallback if ID is not available.
-                    markup = [[InlineKeyboardButton(text="📋 کپی پیوند", copy_text=url)],
-                              [InlineKeyboardButton(text="🌐 اطلاعات بیشتر", url=url)],
-                              [create_close_button(user_id)]]
                     await self.bot.send_chat_action(chat_id, "upload_voice")
                     logger.info(f"Direct uploading audio: {track_data.get('trackName')} ({quality}kbps)")
-                    await self.bot.send_audio(chat_id, audio=f, caption=f"{caption}{FOOTER}", reply_markup=InlineKeyboard(*markup))
+                    await self.bot.send_audio(chat_id, audio=f, caption=f"{caption}{FOOTER}")
                 await safe_delete(status_msg)
                 return status_msg, True
             else:

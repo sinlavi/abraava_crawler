@@ -3,8 +3,7 @@ import io
 import logging
 import asyncio
 from typing import Optional, Union, Dict, Any, List, Tuple
-from balethon import Client
-from balethon.objects import Message, InlineKeyboard, InlineKeyboardButton
+from telegram import Bot, Message
 from core.logger import logger
 from core.http_client import HttpClient
 from services.api_client import APIClient
@@ -12,10 +11,9 @@ from crawlers.itunes import set_mirror, get_mirror
 from crawlers.youtube import get_artist_image
 from utils.helpers import get_high_res_artwork
 from utils.image_utils import crop_to_square
-from bot.keyboards import create_close_button
 
 class ArtworkService:
-    def __init__(self, api_client: APIClient, user_settings_service):
+    def __init__(self, api_client: APIClient, user_settings_service=None):
         self.api_client = api_client
         self.user_settings_service = user_settings_service
         self.auto_download_mode = {} # user_id -> end_timestamp
@@ -34,8 +32,8 @@ class ArtworkService:
 
                 if artwork_data:
                     cached_url = artwork_data.get('url') if isinstance(artwork_data, dict) else artwork_data
-                    if cached_url and '<token>' in cached_url:
-                        return cached_url.split('<token>/')[-1]
+                    if cached_url and 'bot<token>/' in cached_url:
+                        return cached_url.split('bot<token>/')[-1]
                     return cached_url
             return None
         except Exception as e:
@@ -46,7 +44,8 @@ class ArtworkService:
         try:
             if not entity_id or not file_id: return False
 
-            artwork_url = f'https://tapi.bale.ai/file/bot<token>/{file_id}'
+            # Using generic bot<token> placeholder
+            artwork_url = f'https://api.telegram.org/file/bot<token>/{file_id}'
             result = await set_mirror(entity_type, str(entity_id), 'artworkUrl', artwork_url)
             return bool(result)
         except Exception as e:
@@ -58,9 +57,12 @@ class ArtworkService:
                                        user_id: Optional[int] = None,
                                        entity_name: str = None) -> Optional[Union[str, bytes]]:
         logger.info(f"Retrieving artwork for {entity_type} {entity_id} ({entity_name}) for user {user_id}")
-        settings = await self.user_settings_service.get_settings(user_id)
-        if not settings.show_artwork:
-            logger.info(f"Artwork display is disabled for user {user_id}")
+
+        # settings removed, defaulting show_artwork to True
+        show_artwork = True
+
+        if not show_artwork:
+            logger.info(f"Artwork display is disabled")
             return None
 
         cached_file_id = await self.get_cached_artwork_url(entity_type, entity_id)
@@ -86,39 +88,31 @@ class ArtworkService:
                 logger.error(f"Error downloading artwork: {e}")
         return None
 
-    async def send_artwork_photo(self, bot: Client, chat_id: int, artwork_data: Union[str, bytes],
+    async def send_artwork_photo(self, bot: Bot, chat_id: int, artwork_data: Union[str, bytes],
                                   caption: str, reply_markup=None,
                                   entity_type: str = None, entity_id: int = None,
                                   user_id: int = None, silent: bool = False):
         try:
-            from utils.messages import _prepare_markup, FOOTER, send_message
-            markup = _prepare_markup(reply_markup if not silent else False, False)
+            from utils.messages import FOOTER
 
             try:
                 if not silent:
                     await bot.send_chat_action(chat_id, "upload_photo")
+
                 if isinstance(artwork_data, str):
-                    msg = await bot.send_photo(chat_id, photo=artwork_data, caption=f"{caption}{FOOTER}", reply_markup=markup)
+                    msg = await bot.send_photo(chat_id, photo=artwork_data, caption=f"{caption}{FOOTER}")
                 else:
                     photo_io = io.BytesIO(artwork_data)
                     photo_io.name = "artwork.jpg"
-                    msg = await bot.send_photo(chat_id, photo=photo_io, caption=f"{caption}{FOOTER}", reply_markup=markup)
+                    msg = await bot.send_photo(chat_id, photo=photo_io, caption=f"{caption}{FOOTER}")
 
                     if msg and msg.photo and entity_type and entity_id:
-                        file_id = str(msg.photo[0].id)
+                        # telegram.PhotoSize uses file_id
+                        file_id = msg.photo[-1].file_id
                         await self.set_artwork_mirror(entity_type, entity_id, file_id)
                 return msg
             except Exception as e:
                 logger.warning(f"Failed to send artwork: {e}")
-                # Ask user if they want to force download/upload or skip
-                if user_id and not silent:
-                    self.auto_download_mode[user_id] = time.time() + 900 # 15 mins
-                    text = f"⚠️ *خطا در نمایش کاور*\nآیا مایلید مجدداً تلاش شود؟ (در صورت تایید کاور مستقیماً دانلود و آپلود می‌شود)"
-                    retry_markup = [
-                        [InlineKeyboardButton(text="✅ بله، تلاش مجدد", callback_data=f"force_artwork:{entity_type}:{entity_id}:{caption[:30]}:u{user_id}")],
-                        [create_close_button(user_id)]
-                    ]
-                    await send_message(bot, chat_id, text, reply_markup=retry_markup)
                 return None
         except Exception as e:
             logger.error(f"Failed in send_artwork_photo helper: {e}")
@@ -138,40 +132,3 @@ class ArtworkService:
                             return artwork_bytes
                 except: pass
         return None
-
-    async def force_manual_artwork(self, bot: Client, chat_id: int, entity_type: str, entity_id: int, caption: str, user_id: int):
-        """Attempts to recovery artwork by direct download and upload when mirrors fail."""
-        try:
-            # 1. Get metadata to find the official URL if not provided
-            # For simplicity, we assume we need to find it again or it was passed
-            # Let's try to get it from itunes lookup
-            from crawlers.itunes import lookup_itunes
-            data = await lookup_itunes(entity_id, entity_type if entity_type != 'collection' else None)
-            if not data or not data.get('results'):
-                await bot.send_message(chat_id, "❌ خطا در یافتن اطلاعات برای بازیابی کاور.")
-                return
-
-            item = data['results'][0]
-            artwork_url = get_high_res_artwork(item.get('artworkUrl100') or item.get('artworkUrl'))
-
-            if not artwork_url and entity_type == "artist":
-                artwork_url = get_artist_image(item.get('artistName'))
-
-            if not artwork_url:
-                await bot.send_message(chat_id, "❌ کاوری یافت نشد.")
-                return
-
-            # 2. Download bytes
-            session = await HttpClient.get_session()
-            async with session.get(artwork_url, timeout=60) as resp:
-                if resp.status != 200:
-                    await bot.send_message(chat_id, "❌ خطا در دانلود مستقیم کاور.")
-                    return
-                artwork_bytes = await resp.read()
-
-            # 3. Send and Mirror
-            await self.send_artwork_photo(bot, chat_id, artwork_bytes, caption, entity_type=entity_type, entity_id=entity_id, user_id=user_id)
-
-        except Exception as e:
-            logger.error(f"Error in force_manual_artwork: {e}")
-            await bot.send_message(chat_id, f"❌ خطای غیرمنتظره در بازیابی کاور: {e}")
