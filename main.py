@@ -104,7 +104,7 @@ async def run_crawler():
 
     request = None
     if PROXY:
-        request = HTTPXRequest(proxy_url=PROXY)
+        request = HTTPXRequest(proxy=PROXY)
 
     bot = Bot(token=TG_TOKEN, request=request)
 
