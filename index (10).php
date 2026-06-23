@@ -1,0 +1,2960 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Music Hub · Platform</title>
+
+    <!-- Bootstrap 5 + Icons + Fonts -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&display=swap" rel="stylesheet" />
+
+    <style>
+        /* ── RESET & BASE ── */
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            padding-bottom: 86px;
+            background: var(--bs-body-bg);
+        }
+
+        .app-wrapper {
+            display: flex;
+            height: calc(100vh - 86px);
+            overflow: hidden;
+        }
+
+        /* ── SIDEBAR ── */
+        .sidebar {
+            width: 300px;
+            min-width: 300px;
+            background: var(--bs-tertiary-bg);
+            border-right: 1px solid var(--bs-border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: width 0.2s;
+        }
+        .sidebar.collapsed {
+            width: 0;
+            min-width: 0;
+            border-right: none;
+        }
+        .sidebar .sidebar-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem 0.25rem;
+        }
+
+        /* ── TREE ── */
+        .tree-node {
+            padding-left: 0;
+            list-style: none;
+            margin: 0;
+        }
+        .tree-node li {
+            list-style: none;
+            margin: 1px 0;
+        }
+        .tree-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: var(--bs-body-color);
+            transition: background 0.1s;
+        }
+        .tree-toggle:hover {
+            background: var(--bs-tertiary-bg);
+            color: var(--bs-link-hover-color);
+        }
+        .tree-toggle .tree-icon {
+            width: 1.1rem;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .tree-toggle .tree-label {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .tree-toggle .tree-badge {
+            font-size: 0.65rem;
+            opacity: 0.7;
+            flex-shrink: 0;
+            margin-left: 0.2rem;
+        }
+        .tree-toggle .tree-actions {
+            display: flex;
+            gap: 0.1rem;
+            flex-shrink: 0;
+        }
+        .tree-toggle .tree-actions .btn {
+            padding: 0 0.2rem;
+            font-size: 0.7rem;
+            line-height: 1.2;
+        }
+        .tree-children {
+            margin-left: 1rem;
+            padding-left: 0.4rem;
+            border-left: 1px dotted var(--bs-border-color);
+            display: none;
+        }
+        .tree-node li.open>.tree-children {
+            display: block;
+        }
+        .tree-toggle.active-node {
+            background: var(--bs-primary-bg-subtle);
+            font-weight: 600;
+            color: var(--bs-primary);
+        }
+        .tree-loading {
+            padding: 0.2rem 0.8rem;
+            font-size: 0.8rem;
+            color: var(--bs-secondary-color);
+        }
+        .tree-empty {
+            padding: 1rem 0.5rem;
+            text-align: center;
+            color: var(--bs-secondary-color);
+            font-size: 0.9rem;
+        }
+
+        /* ── MAIN ── */
+        .main-content {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            background: var(--bs-body-bg);
+            height: calc(100% - 60px);
+        }
+        .main-content .tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.75rem 1rem;
+        }
+        .main-content .tab-pane {
+            height: 100%;
+        }
+
+        /* ── RIGHT PANEL ── */
+        .right-panel {
+            width: 300px;
+            min-width: 300px;
+            background: var(--bs-tertiary-bg);
+            border-left: 1px solid var(--bs-border-color);
+            overflow-y: auto;
+            padding: 0.75rem;
+            transition: width 0.2s;
+        }
+        .right-panel.collapsed {
+            width: 0;
+            min-width: 0;
+            border-left: none;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        /* ── QUEUE TABLE ── */
+        .queue-table-wrap {
+            overflow-y: auto;
+            flex: 1;
+        }
+        .queue-table-wrap .table {
+            font-size: 0.8rem;
+            margin-bottom: 0;
+        }
+        .queue-table-wrap .table th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: var(--bs-tertiary-bg);
+            border-bottom: 2px solid var(--bs-border-color);
+        }
+        .queue-table-wrap .table td {
+            vertical-align: middle;
+        }
+        .queue-table-wrap .table .status-badge {
+            font-size: 0.65rem;
+            padding: 0.1rem 0.5rem;
+            border-radius: 0.25rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            display: inline-block;
+        }
+
+        /* ── PLAYER BAR ── */
+        .player-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 86px;
+            background: var(--bs-tertiary-bg);
+            border-top: 1px solid var(--bs-border-color);
+            display: flex;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            gap: 0.75rem;
+            z-index: 1050;
+            backdrop-filter: blur(6px);
+        }
+        .player-bar .artwork {
+            width: 58px;
+            height: 58px;
+            border-radius: 0.3rem;
+            background: var(--bs-secondary-bg);
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            color: var(--bs-secondary-color);
+            border: 1px solid var(--bs-border-color);
+            object-fit: cover;
+        }
+        .player-bar .artwork img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 0.3rem;
+        }
+        .player-bar .track-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .player-bar .track-info .title {
+            font-weight: 600;
+            font-size: 0.95rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--bs-body-color);
+        }
+        .player-bar .track-info .artist {
+            font-size: 0.8rem;
+            color: var(--bs-secondary-color);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .player-bar .controls {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            flex-shrink: 0;
+        }
+        .player-bar .controls .btn {
+            border-radius: 50%;
+            width: 38px;
+            height: 38px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+        .player-bar .controls .btn-play {
+            width: 46px;
+            height: 46px;
+            font-size: 1.6rem;
+            background: var(--bs-primary);
+            color: #fff;
+            border-color: var(--bs-primary);
+        }
+        .player-bar .controls .btn-play:hover {
+            background: var(--bs-primary-hover, #0a58ca);
+            color: #fff;
+        }
+        .player-bar .progress-wrap {
+            flex: 2;
+            min-width: 120px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .player-bar .progress-wrap .time {
+            font-size: 0.7rem;
+            font-variant-numeric: tabular-nums;
+            color: var(--bs-secondary-color);
+            min-width: 42px;
+            text-align: center;
+        }
+        .player-bar .progress-wrap input[type="range"] {
+            flex: 1;
+            height: 4px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: var(--bs-border-color);
+            border-radius: 2px;
+            outline: none;
+            min-width: 40px;
+        }
+        .player-bar .progress-wrap input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--bs-primary);
+            cursor: pointer;
+            border: 2px solid var(--bs-body-bg);
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+        }
+        .player-bar .progress-wrap input[type="range"]::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--bs-primary);
+            cursor: pointer;
+            border: 2px solid var(--bs-body-bg);
+        }
+        .player-bar .volume-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            flex-shrink: 0;
+        }
+        .player-bar .volume-wrap .btn {
+            padding: 0 0.3rem;
+            font-size: 1.1rem;
+            color: var(--bs-secondary-color);
+        }
+        .player-bar .volume-wrap input[type="range"] {
+            width: 60px;
+            height: 3px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: var(--bs-border-color);
+            border-radius: 2px;
+            outline: none;
+        }
+        .player-bar .volume-wrap input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--bs-primary);
+            cursor: pointer;
+            border: 1px solid var(--bs-body-bg);
+        }
+        .player-bar .volume-wrap input[type="range"]::-moz-range-thumb {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--bs-primary);
+            cursor: pointer;
+            border: 1px solid var(--bs-body-bg);
+        }
+        .player-bar .btn-close-player {
+            color: var(--bs-secondary-color);
+            font-size: 1.2rem;
+            padding: 0 0.3rem;
+            background: none;
+            border: none;
+        }
+        .player-bar .btn-close-player:hover {
+            color: var(--bs-danger);
+        }
+
+        /* ── LYRICS ── */
+        .lyrics-container {
+            max-height: 320px;
+            overflow-y: auto;
+            background: var(--bs-secondary-bg);
+            border-radius: 0.3rem;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.7;
+            border: 1px solid var(--bs-border-color);
+        }
+        .lyrics-container .synced-line {
+            display: block;
+            padding: 0.1rem 0.3rem;
+            border-radius: 0.2rem;
+            transition: background 0.15s, color 0.15s;
+            cursor: default;
+        }
+        .lyrics-container .synced-line.active {
+            background: var(--bs-primary-bg-subtle);
+            color: var(--bs-primary);
+            font-weight: 600;
+            border-left: 3px solid var(--bs-primary);
+        }
+        .lyrics-container .synced-line .timestamp {
+            color: var(--bs-secondary-color);
+            font-weight: 600;
+            font-size: 0.65rem;
+            margin-right: 0.6rem;
+            display: inline-block;
+            min-width: 3.6rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .lyrics-container .synced-line.active .timestamp {
+            color: var(--bs-primary);
+        }
+
+        /* ── DOWNLOAD BOX ── */
+        .download-box {
+            background: var(--bs-secondary-bg);
+            border: 1px solid var(--bs-border-color);
+            border-radius: 0.4rem;
+            padding: 0.5rem 0.75rem;
+            margin-top: 0.5rem;
+        }
+        .download-box .mirror-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.3rem 0;
+            border-bottom: 1px solid var(--bs-border-color-subtle);
+            font-size: 0.8rem;
+        }
+        .download-box .mirror-item:last-child {
+            border-bottom: none;
+        }
+        .download-box .badge-quality {
+            font-size: 0.6rem;
+            padding: 0.05rem 0.4rem;
+            border-radius: 0.25rem;
+            background: var(--bs-primary);
+            color: #fff;
+        }
+        .download-box .btn-sm {
+            padding: 0.1rem 0.4rem;
+            font-size: 0.7rem;
+        }
+        .download-progress {
+            width: 100%;
+            height: 4px;
+            background: var(--bs-border-color);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 0.15rem;
+        }
+        .download-progress .bar {
+            height: 100%;
+            background: var(--bs-primary);
+            width: 0%;
+            transition: width 0.3s;
+            border-radius: 2px;
+        }
+
+        /* ── META GRID ── */
+        .meta-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.4rem;
+        }
+        .meta-grid .meta-item {
+            background: var(--bs-secondary-bg);
+            border-radius: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            border: 1px solid var(--bs-border-color);
+        }
+        .meta-grid .meta-item label {
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--bs-secondary-color);
+            display: block;
+            font-weight: 600;
+        }
+        .meta-grid .meta-item div {
+            font-size: 0.8rem;
+            font-weight: 500;
+            word-break: break-all;
+        }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width:768px) {
+            .sidebar {
+                width: 0;
+                min-width: 0;
+                border-right: none;
+                position: fixed;
+                top: 56px;
+                bottom: 86px;
+                left: 0;
+                z-index: 1040;
+                background: var(--bs-body-bg);
+                border-right: 1px solid var(--bs-border-color);
+                transition: width 0.25s, min-width 0.25s;
+            }
+            .sidebar.open {
+                width: 280px;
+                min-width: 280px;
+            }
+            .right-panel {
+                width: 0;
+                min-width: 0;
+                border-left: none;
+                position: fixed;
+                top: 56px;
+                display: none;
+                bottom: 86px;
+                right: 0;
+                z-index: 1040;
+                background: var(--bs-body-bg);
+                border-left: 1px solid var(--bs-border-color);
+                transition: width 0.25s, min-width 0.25s;
+            }
+            .right-panel.open {
+                width: 280px;
+                min-width: 280px;
+                display: block;
+            }
+            .player-bar {
+                flex-wrap: wrap;
+                height: auto;
+                min-height: 86px;
+                padding: 0.4rem 0.6rem;
+                gap: 0.4rem;
+            }
+            .player-bar .artwork {
+                width: 44px;
+                height: 44px;
+                font-size: 1.2rem;
+            }
+            .player-bar .progress-wrap {
+                order: 10;
+                flex-basis: 100%;
+                min-width: unset;
+            }
+            .player-bar .controls .btn {
+                width: 32px;
+                height: 32px;
+                font-size: 1rem;
+            }
+            .player-bar .controls .btn-play {
+                width: 40px;
+                height: 40px;
+                font-size: 1.3rem;
+            }
+            .player-bar .volume-wrap input[type="range"] {
+                width: 40px;
+            }
+            body {
+                padding-bottom: 120px;
+            }
+            .app-wrapper {
+                height: calc(100vh - 120px);
+            }
+            .meta-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width:480px) {
+            .player-bar .track-info .title {
+                font-size: 0.8rem;
+            }
+            .player-bar .track-info .artist {
+                font-size: 0.7rem;
+            }
+            .player-bar .controls .btn {
+                width: 28px;
+                height: 28px;
+                font-size: 0.85rem;
+            }
+            .player-bar .controls .btn-play {
+                width: 36px;
+                height: 36px;
+                font-size: 1.1rem;
+            }
+            .player-bar .volume-wrap input[type="range"] {
+                width: 30px;
+            }
+        }
+
+        /* ── SCROLLBAR ── */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bs-tertiary-bg);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--bs-border-color);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--bs-secondary-color);
+        }
+
+        .cursor-pointer {
+            cursor: pointer;
+        }
+        .text-truncate-2 {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        /* ── DOWNLOADS TAB ── */
+        .download-task-item {
+            background: var(--bs-secondary-bg);
+            border: 1px solid var(--bs-border-color);
+            border-radius: 0.4rem;
+            padding: 0.6rem 0.8rem;
+            margin-bottom: 0.4rem;
+            cursor: pointer;
+        }
+        .download-task-item .task-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+        }
+        .download-task-item .task-progress {
+            flex: 1;
+            min-width: 100px;
+        }
+        .download-task-item .task-status {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        /* rate limit banner */
+        .rate-banner {
+            font-size: 0.8rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 0.3rem;
+            background: var(--bs-warning-bg-subtle);
+            color: var(--bs-warning-text);
+            border: 1px solid var(--bs-warning-border-subtle);
+        }
+        .rate-banner .count {
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ===== NAVBAR ===== -->
+<nav class="navbar navbar-expand-md navbar-dark bg-dark sticky-top" style="z-index:1060;">
+    <div class="container-fluid px-2 px-md-3">
+        <button class="btn btn-outline-light btn-sm me-2 d-md-none" id="sidebarToggle">
+            <i class="bi bi-list"></i>
+        </button>
+        <a class="navbar-brand fw-bold" href="#">
+            <i class="bi bi-vinyl-fill text-primary me-1"></i> Music Hub
+        </a>
+        <div class="d-flex gap-1 ms-auto align-items-center">
+            <button class="btn btn-outline-light btn-sm" id="themeToggle" title="Toggle theme">
+                <i class="bi bi-moon-stars" id="themeIcon"></i>
+            </button>
+            <button class="btn btn-outline-light btn-sm d-none d-md-flex" id="rightPanelToggle" title="Info panel">
+                <i class="bi bi-info-circle"></i>
+            </button>
+            <span class="badge bg-warning text-dark ms-1 d-none d-md-inline" id="rateBadge" title="Downloads remaining this 10-min window">100</span>
+        </div>
+    </div>
+</nav>
+
+<!-- ===== APP WRAPPER ===== -->
+<div class="app-wrapper">
+
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar" id="sidebar">
+        <div class="p-2 border-bottom border-secondary">
+            <div class="input-group input-group-sm">
+                <input type="text" id="sidebarSearchInput" class="form-control" placeholder="Search artists, albums, tracks…" value="Pink Floyd" />
+                <button class="btn btn-primary" id="sidebarSearchBtn"><i class="bi bi-search"></i></button>
+            </div>
+        </div>
+        <div class="d-flex align-items-center gap-1 p-2 border-bottom border-secondary">
+            <span class="badge bg-primary" id="treeTotalBadge">0 items</span>
+            <div class="btn-group btn-group-sm ms-auto">
+                <button class="btn btn-outline-secondary" id="treeExpandAll" title="Expand all"><i class="bi bi-arrows-expand"></i></button>
+                <button class="btn btn-outline-secondary" id="treeCollapseAll" title="Collapse all"><i class="bi bi-arrows-collapse"></i></button>
+            </div>
+        </div>
+        <div class="sidebar-body" id="treeContainer">
+            <div class="tree-empty"><i class="bi bi-search me-1"></i> Search above to build the catalog tree.</div>
+        </div>
+        <div class="p-2 border-top border-secondary d-flex gap-1 flex-wrap" id="treeBulkBar" style="display:none;">
+            <span class="badge bg-primary" id="treeSelectedCount">0</span>
+            <span class="text-muted small">selected</span>
+            <button class="btn btn-success btn-sm ms-auto" id="treeBulkAdd"><i class="bi bi-plus-circle"></i> Import</button>
+            <button class="btn btn-outline-secondary btn-sm" id="treeSelectAll"><i class="bi bi-check-all"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" id="treeSelectNone"><i class="bi bi-x"></i></button>
+        </div>
+    </aside>
+
+    <!-- ===== MAIN CONTENT ===== -->
+    <main class="main-content">
+
+        <ul class="nav nav-tabs border-0 px-2 pt-1" style="background:var(--bs-tertiary-bg);flex-shrink:0;" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="tab-discover" data-bs-toggle="tab" data-bs-target="#pane-discover" type="button" role="tab">
+                    <i class="bi bi-compass"></i> Discover
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-queue" data-bs-toggle="tab" data-bs-target="#pane-queue" type="button" role="tab">
+                    <i class="bi bi-list-task"></i> Queue <span class="badge bg-primary ms-1" id="queueTabBadge">0</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-downloads" data-bs-toggle="tab" data-bs-target="#pane-downloads" type="button" role="tab">
+                    <i class="bi bi-cloud-download"></i> Downloads
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-stats" data-bs-toggle="tab" data-bs-target="#pane-stats" type="button" role="tab">
+                    <i class="bi bi-bar-chart"></i> Stats
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="mainTabContent">
+
+            <!-- DISCOVER -->
+            <div class="tab-pane fade show active" id="pane-discover" role="tabpanel">
+                <div id="discoverWorkspace">
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-music-note-beamed display-4"></i>
+                        <p class="mt-2">Select an artist, album, or track from the sidebar to explore.</p>
+                        <p class="small">Use the search bar in the sidebar to populate the catalog.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- QUEUE -->
+            <div class="tab-pane fade" id="pane-queue" role="tabpanel">
+                <div class="d-flex flex-wrap align-items-center gap-1 mb-2">
+                    <span class="badge bg-secondary" id="queueStatsBadge">0 total</span>
+                    <div class="btn-group btn-group-sm ms-auto">
+                        <button class="btn btn-outline-secondary" id="refreshQueue"><i class="bi bi-arrow-clockwise"></i></button>
+                        <button class="btn btn-outline-danger" id="clearFailed"><i class="bi bi-trash3"></i> Failed</button>
+                        <button class="btn btn-outline-warning" id="retryFailed"><i class="bi bi-arrow-repeat"></i> Retry</button>
+                        <button class="btn btn-outline-success" id="clearCompleted"><i class="bi bi-trash3"></i> Completed</button>
+                        <button class="btn btn-outline-primary" id="exportQueue"><i class="bi bi-download"></i> CSV</button>
+                    </div>
+                </div>
+                <div class="row g-1 mb-2">
+                    <div class="col-12 col-md-3">
+                        <select class="form-select form-select-sm" id="queueStatusFilter">
+                            <option value="all">All status</option>
+                            <option value="pending">Pending</option>
+                            <option value="downloading">Downloading</option>
+                            <option value="paused">Paused</option>
+                            <option value="completed">Completed</option>
+                            <option value="failed">Failed</option>
+                            <option value="stopped">Stopped</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <input type="text" class="form-control form-control-sm" id="queueSearchFilter" placeholder="Search tracks…" />
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <select class="form-select form-select-sm" id="queueSortBy">
+                            <option value="id">Sort by ID</option>
+                            <option value="status">Status</option>
+                            <option value="track">Track</option>
+                            <option value="added">Added</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3 text-md-end">
+                        <span class="badge bg-secondary" id="queueFilterCount">0 shown</span>
+                        <button class="btn btn-sm btn-outline-secondary" id="clearQueueFilters"><i class="bi bi-arrow-counterclockwise"></i></button>
+                    </div>
+                </div>
+                <div id="queueBulkBar" class="d-flex align-items-center gap-1 p-1 mb-1 bg-warning-subtle border border-warning-subtle rounded" style="display:none;">
+                    <span class="badge bg-primary" id="queueSelectedCount">0</span>
+                    <span class="small">selected</span>
+                    <button class="btn btn-sm btn-success" id="queueBulkStart"><i class="bi bi-play-fill"></i></button>
+                    <button class="btn btn-sm btn-warning" id="queueBulkPause"><i class="bi bi-pause-fill"></i></button>
+                    <button class="btn btn-sm btn-primary" id="queueBulkResume"><i class="bi bi-arrow-repeat"></i></button>
+                    <button class="btn btn-sm btn-danger" id="queueBulkStop"><i class="bi bi-stop-fill"></i></button>
+                    <button class="btn btn-sm btn-outline-secondary" id="queueBulkRetry"><i class="bi bi-arrow-repeat"></i></button>
+                    <button class="btn btn-sm btn-outline-danger" id="queueBulkDelete"><i class="bi bi-trash3"></i></button>
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" id="queueSelectAll"><i class="bi bi-check-all"></i></button>
+                    <button class="btn btn-sm btn-outline-secondary" id="queueSelectNone"><i class="bi bi-x"></i></button>
+                </div>
+                <div class="queue-table-wrap">
+                    <table class="table table-hover table-striped align-middle" id="queueTable">
+                        <thead>
+                        <tr>
+                            <th style="width:30px;"><input type="checkbox" id="queueSelectAllCheck" /></th>
+                            <th style="width:50px;">ID</th>
+                            <th>Track</th>
+                            <th>Artist</th>
+                            <th style="width:60px;">Quality</th>
+                            <th style="width:110px;">Status</th>
+                            <th style="width:140px;">Actions</th>
+                            <th style="width:60px;">Mirror</th>
+                        </tr>
+                        </thead>
+                        <tbody id="queueBody">
+                        <tr><td colspan="8" class="text-center text-muted py-3"><i class="bi bi-arrow-clockwise me-1"></i> Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="queueLoadMore" class="text-center py-2" style="display:none;">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="loadQueuePage()">Load more…</button>
+                </div>
+            </div>
+
+            <!-- DOWNLOADS -->
+            <div class="tab-pane fade" id="pane-downloads" role="tabpanel">
+                <div id="downloadsWorkspace">
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-cloud-download display-4"></i>
+                        <p class="mt-2">Your background downloads appear here.</p>
+                        <p class="small">Click a download to see track details.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STATS -->
+            <div class="tab-pane fade" id="pane-stats" role="tabpanel">
+                <div id="statsWorkspace">
+                    <div class="text-center text-muted py-5"><i class="bi bi-arrow-clockwise me-1"></i> Loading stats…</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ===== RIGHT PANEL ===== -->
+    <aside class="right-panel" id="rightPanel">
+        <div id="rightPanelContent">
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-info-circle display-6"></i>
+                <p class="small mt-2">Select an item to see details, lyrics, and download options.</p>
+            </div>
+        </div>
+    </aside>
+</div>
+
+<!-- ===== PLAYER BAR ===== -->
+<footer class="player-bar" id="playerBar">
+    <div class="artwork" id="playerArtwork"><i class="bi bi-music-note"></i></div>
+    <div class="track-info">
+        <div class="title" id="playerTitle">No track loaded</div>
+        <div class="artist" id="playerArtist">—</div>
+    </div>
+    <div class="controls">
+        <button class="btn btn-outline-secondary" id="playerPrev" title="Previous"><i class="bi bi-skip-backward-fill"></i></button>
+        <button class="btn btn-play" id="playerPlay" title="Play / Pause"><i class="bi bi-play-fill"></i></button>
+        <button class="btn btn-outline-secondary" id="playerNext" title="Next"><i class="bi bi-skip-forward-fill"></i></button>
+    </div>
+    <div class="progress-wrap">
+        <span class="time" id="playerCurrentTime">0:00</span>
+        <input type="range" id="playerProgress" min="0" max="1000" value="0" />
+        <span class="time" id="playerDuration">0:00</span>
+    </div>
+    <div class="volume-wrap">
+        <button class="btn" id="playerVolumeToggle" title="Mute"><i class="bi bi-volume-up-fill"></i></button>
+        <input type="range" id="playerVolume" min="0" max="100" value="80" />
+    </div>
+    <button class="btn-close-player" id="playerClose" title="Close player"><i class="bi bi-x-lg"></i></button>
+</footer>
+
+<!-- ===== TOAST ===== -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999;">
+    <div id="liveToast" class="toast align-items-center text-bg-dark border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body" id="toastBody">Message</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+</div>
+
+<!-- ===== MODAL ===== -->
+<div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modalTitle">Confirm</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalBody">Are you sure?</div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" id="modalConfirmBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== SCRIPTS ===== -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js">
+</script>
+<script>
+    // ================================================================
+    //  CONFIG
+    // ================================================================
+    const API_BASE = 'https://3rah.ir/music';
+    const PROXY_URL = API_BASE + '/ui/audio_proxy.php';
+    const RATE_LIMIT = 100;
+    const RATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+    const STORAGE_KEY = 'music_hub_user';
+
+    // ================================================================
+    //  USER STATE (localStorage)
+    // ================================================================
+    function getUserState() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) return JSON.parse(raw);
+        } catch {}
+        return { downloads: [], addedTracks: [] };
+    }
+
+    function saveUserState(state) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function getDownloadCountInWindow() {
+        const state = getUserState();
+        const now = Date.now();
+        const recent = state.downloads.filter(t => now - t < RATE_WINDOW_MS);
+        return recent.length;
+    }
+
+    function canDownload() {
+        return getDownloadCountInWindow() < RATE_LIMIT;
+    }
+
+    function recordDownload(trackId) {
+        const state = getUserState();
+        state.downloads.push(Date.now());
+        if (state.downloads.length > 200) state.downloads = state.downloads.slice(-200);
+        saveUserState(state);
+        updateRateBadge();
+    }
+
+    function markTrackAdded(trackId) {
+        const state = getUserState();
+        if (!state.addedTracks.includes(trackId)) {
+            state.addedTracks.push(trackId);
+            saveUserState(state);
+        }
+    }
+
+    function isTrackAddedByUser(trackId) {
+        const state = getUserState();
+        return state.addedTracks.includes(trackId);
+    }
+
+    function updateRateBadge() {
+        const remaining = Math.max(0, RATE_LIMIT - getDownloadCountInWindow());
+        const el = document.getElementById('rateBadge');
+        if (el) el.textContent = remaining;
+    }
+
+    // ================================================================
+    //  DOM REFS
+    // ================================================================
+    const $ = (s) => document.querySelector(s);
+    const $$ = (s) => document.querySelectorAll(s);
+
+    const sidebar = $('#sidebar');
+    const rightPanel = $('#rightPanel');
+    const treeContainer = $('#treeContainer');
+    const treeBulkBar = $('#treeBulkBar');
+    const treeSelectedCount = $('#treeSelectedCount');
+    const treeTotalBadge = $('#treeTotalBadge');
+
+    const sidebarSearchInput = $('#sidebarSearchInput');
+    const sidebarSearchBtn = $('#sidebarSearchBtn');
+
+    const discoverWorkspace = $('#discoverWorkspace');
+    const rightPanelContent = $('#rightPanelContent');
+    const downloadsWorkspace = $('#downloadsWorkspace');
+
+    // Player
+    const playerArtwork = $('#playerArtwork');
+    const playerTitle = $('#playerTitle');
+    const playerArtist = $('#playerArtist');
+    const playerPlay = $('#playerPlay');
+    const playerProgress = $('#playerProgress');
+    const playerCurrentTime = $('#playerCurrentTime');
+    const playerDuration = $('#playerDuration');
+    const playerVolume = $('#playerVolume');
+    const playerVolumeToggle = $('#playerVolumeToggle');
+    const playerClose = $('#playerClose');
+    const playerPrev = $('#playerPrev');
+    const playerNext = $('#playerNext');
+
+    // Queue
+    const queueBody = $('#queueBody');
+    const queueTabBadge = $('#queueTabBadge');
+    const queueStatsBadge = $('#queueStatsBadge');
+    const queueFilterCount = $('#queueFilterCount');
+    const queueBulkBar = $('#queueBulkBar');
+    const queueSelectedCount = $('#queueSelectedCount');
+
+    // Toast
+    const toastEl = $('#liveToast');
+    const toastBody = $('#toastBody');
+    const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
+
+    // Modal
+    const modalEl = $('#confirmModal');
+    const modal = new bootstrap.Modal(modalEl);
+    const modalTitle = $('#modalTitle');
+    const modalBody = $('#modalBody');
+    const modalConfirmBtn = $('#modalConfirmBtn');
+
+    // ================================================================
+    //  TOAST / MODAL
+    // ================================================================
+    function showToast(msg, isError = false) {
+        toastBody.textContent = msg;
+        toastEl.classList.toggle('text-bg-danger', isError);
+        toastEl.classList.toggle('text-bg-dark', !isError);
+        toast.show();
+    }
+
+    function showConfirm(title, body) {
+        return new Promise((resolve) => {
+            modalTitle.textContent = title;
+            modalBody.innerHTML = body;
+            modal.show();
+            modalConfirmBtn.onclick = () => { modal.hide();
+                resolve(true); };
+            modalEl.addEventListener('hidden.bs.modal', () => { resolve(false); }, { once: true });
+        });
+    }
+
+    // ================================================================
+    //  API
+    // ================================================================
+    async function apiCall(endpoint, method = 'GET', body = null) {
+        const url = `${API_BASE}${endpoint}`;
+        const opts = { method, headers: { 'Content-Type': 'application/json' } };
+        if (body && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+            opts.body = JSON.stringify(body);
+        }
+        const resp = await fetch(url, opts);
+        if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(`HTTP ${resp.status}: ${txt.slice(0, 80)}`);
+        }
+        return resp.json();
+    }
+
+    async function searchItunes(term, entity) {
+        let url = `/search?term=${encodeURIComponent(term)}&limit=200&entity=musicArtist,album,song`;
+        if (entity !== 'all') url += `&entity=${entity}`;
+        else url += `&media=music`;
+        const data = await apiCall(url);
+        return data.results || [];
+    }
+
+    async function fetchChildren(item, offset = 0, limit = 200) {
+        try {
+            let endpoint, params;
+            if (item.wrapperType === 'artist' && item.artistId) {
+                endpoint = '/lookup';
+                params = `id=${cleanId(item.artistId)}&entity=album&limit=${limit}`;
+            } else if (item.wrapperType === 'collection' && item.collectionId) {
+                endpoint = '/lookup';
+                params = `id=${cleanId(item.collectionId)}&entity=song&limit=${limit}`;
+            } else return [];
+            const data = await apiCall(`${endpoint}?${params}`);
+            const results = data.results || [];
+            const childType = item.wrapperType === 'artist' ? 'collection' : 'track';
+            return results.filter(r => r.wrapperType === childType);
+        } catch { return []; }
+    }
+
+    async function fetchAllChildren(item) {
+        let all = [],
+            offset = 0,
+            pageSize = 200;
+        while (true) {
+            const batch = await fetchChildren(item, offset, pageSize);
+            if (!batch.length) break;
+            all = all.concat(batch);
+            offset += pageSize;
+            if (batch.length < pageSize) break;
+        }
+        return all;
+    }
+
+    function cleanId(id) {
+        return id ? id.toString().replace(/^it_/, '') : null;
+    }
+
+    function cacheItem(item) {
+        if (!item) return;
+        if (item.artistId) globalLookupMap.set(`artist:${item.artistId}`, item);
+        if (item.collectionId) globalLookupMap.set(`collection:${item.collectionId}`, item);
+        if (item.trackId) globalLookupMap.set(`track:${item.trackId}`, item);
+    }
+
+    function getProxiedAudioUrl(rawUrl) {
+        if (!rawUrl) return null;
+        return PROXY_URL + '?url=' + encodeURIComponent(rawUrl);
+    }
+
+    function formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const m = Math.floor(seconds / 60);
+        const s = Math.floor(seconds % 60);
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } [m]));
+    }
+
+    function getArtwork600(item) {
+        const url = item.artworkUrl100 || item.artworkUrl60 || '';
+        if (!url) return '';
+        return url.replace(/\/\d+x\d+bb\.jpg/, '/600x600bb.jpg');
+    }
+
+    // ================================================================
+    //  GLOBAL LOOKUP
+    // ================================================================
+    let globalLookupMap = new Map();
+
+    // ================================================================
+    //  TREE STATE
+    // ================================================================
+    let currentTreeItems = [];
+    let selectedTreeIds = new Set();
+    let expandedNodes = new Set();
+    let collectionDownloadStatus = new Map(); // key: collection itemKey, value: boolean (all tracks downloaded)
+
+    // ================================================================
+    //  TREE RENDER (with downloaded indicators)
+    // ================================================================
+    function renderTree(items) {
+        currentTreeItems = [];
+        selectedTreeIds.clear();
+        expandedNodes.clear();
+        collectionDownloadStatus.clear();
+        const filterType = document.getElementById('resultFilter')?.value || 'all';
+        let filtered = items;
+        if (filterType !== 'all') {
+            filtered = items.filter(i => i.wrapperType === filterType);
+        }
+        treeTotalBadge.textContent = filtered.length + ' items';
+
+        const root = document.createElement('ul');
+        root.className = 'tree-node';
+
+        function buildTree(arr, container, depth = 0) {
+            for (const item of arr) {
+                cacheItem(item);
+                const hasChildren = (item.wrapperType === 'artist' || item.wrapperType === 'collection');
+                const displayName = item.trackName || item.collectionName || item.artistName || 'Untitled';
+                const iconMap = { artist: 'bi-person', collection: 'bi-disc', track: 'bi-music-note' };
+                const icon = iconMap[item.wrapperType] || 'bi-music-note';
+                const itemKey = `${item.wrapperType}:${item.artistId || item.collectionId || item.trackId}`;
+
+                // Determine if track is already downloaded (has audio URL)
+                const isTrackDownloaded = (item.wrapperType === 'track' && item.mirrorUrls?.audioUrl?.url);
+                // For collections, initially unknown; we'll update when expanded
+                const isCollectionDownloaded = (item.wrapperType === 'collection') && collectionDownloadStatus.get(itemKey);
+
+                let extra = '';
+                if (item.wrapperType === 'artist' && item.primaryGenreName) {
+                    extra = `<span class="text-muted small">${escapeHtml(item.primaryGenreName)}</span>`;
+                } else if (item.wrapperType === 'collection') {
+                    const year = item.releaseDate ? new Date(item.releaseDate).getFullYear() : '';
+                    const count = item.trackCount || 0;
+                    extra = `${year} · ${count} tracks`;
+                } else if (item.wrapperType === 'track') {
+                    const dur = item.trackTimeMillis ?
+                        `${Math.floor(item.trackTimeMillis / 60000)}:${Math.floor((item.trackTimeMillis % 60000) / 1000).toString().padStart(2, '0')}` :
+                        '';
+                    extra = dur ? `⏱ ${dur}` : '';
+                }
+
+                currentTreeItems.push({ key: itemKey, item, type: item.wrapperType, id: item.artistId || item
+                        .collectionId || item.trackId });
+
+                const li = document.createElement('li');
+                const toggle = document.createElement('div');
+                toggle.className = 'tree-toggle';
+                toggle.dataset.nodeKey = itemKey;
+                if (isTrackDownloaded) toggle.dataset.downloaded = 'true';
+                if (isCollectionDownloaded) toggle.dataset.downloaded = 'true';
+
+                const showAddBtn = !isTrackDownloaded; // For tracks, hide if downloaded; for others, show by default (will be updated later)
+                const downloadedIcon = isTrackDownloaded ? '<i class="bi bi-check-circle-fill text-success small ms-1" title="Already downloaded"></i>' : '';
+
+                toggle.innerHTML = `
+                            <input type="checkbox" class="tree-checkbox form-check-input" data-key="${itemKey}" style="width:14px;height:14px;margin:0;flex-shrink:0;" />
+                            <span class="tree-icon"><i class="bi ${icon}"></i></span>
+                            <span class="tree-label">${escapeHtml(displayName)}${downloadedIcon}</span>
+                            ${extra ? `<span class="tree-badge small text-muted">${extra}</span>` : ''}
+                            <span class="tree-actions">
+                                ${showAddBtn ? `<button class="btn btn-sm btn-outline-primary tree-add" data-key="${itemKey}" title="Add to queue"><i class="bi bi-plus-circle"></i></button>` : ''}
+                                ${hasChildren ? `<button class="btn btn-sm btn-outline-secondary tree-expand" data-key="${itemKey}" title="Expand"><i class="bi bi-chevron-right"></i></button>` : ''}
+                                ${item.wrapperType === 'track' && (item.mirrorUrls?.audioUrl || item.mirrorUrls?.previewUrl) ? `<button class="btn btn-sm btn-success tree-play" data-key="${itemKey}" title="Play"><i class="bi bi-play-fill"></i></button>` : ''}
+                            </span>
+                        `;
+                li.appendChild(toggle);
+
+                const cb = toggle.querySelector('.tree-checkbox');
+                cb.addEventListener('change', () => {
+                    if (cb.checked) selectedTreeIds.add(itemKey);
+                    else selectedTreeIds.delete(itemKey);
+                    updateTreeBulk();
+                });
+
+                const addBtn = toggle.querySelector('.tree-add');
+                if (addBtn) {
+                    addBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        addSingleItemToQueue(item);
+                    });
+                }
+
+                const playBtn = toggle.querySelector('.tree-play');
+                if (playBtn) {
+                    playBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        playTrackFromItem(item);
+                    });
+                }
+
+                const expandBtn = toggle.querySelector('.tree-expand');
+                if (expandBtn) {
+                    expandBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        await toggleExpand(li, item, itemKey);
+                    });
+                    toggle.addEventListener('click', async (e) => {
+                        if (e.target.type === 'checkbox' || e.target.closest('.tree-actions')) return;
+                        await toggleExpand(li, item, itemKey);
+                    });
+                } else {
+                    toggle.addEventListener('click', (e) => {
+                        if (e.target.type === 'checkbox' || e.target.closest('.tree-actions')) return;
+                        activateNode(itemKey, item);
+                        closeDrawers();
+                    });
+                }
+
+                const label = toggle.querySelector('.tree-label');
+                label.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    activateNode(itemKey, item);
+                    closeDrawers();
+                });
+
+                if (hasChildren) {
+                    const childrenContainer = document.createElement('ul');
+                    childrenContainer.className = 'tree-children';
+                    li.appendChild(childrenContainer);
+                }
+
+                container.appendChild(li);
+            }
+        }
+
+        buildTree(filtered, root);
+        treeContainer.innerHTML = '';
+        treeContainer.appendChild(root);
+        updateTreeBulk();
+    }
+
+    async function toggleExpand(li, item, itemKey) {
+        const isOpen = li.classList.contains('open');
+        if (!isOpen) {
+            if (!expandedNodes.has(itemKey)) {
+                const childContainer = li.querySelector('.tree-children');
+                if (childContainer) {
+                    childContainer.innerHTML =
+                        `<div class="tree-loading"><i class="bi bi-arrow-clockwise me-1"></i> Loading…</div>`;
+                    const kids = await fetchAllChildren(item);
+                    childContainer.innerHTML = '';
+                    if (kids.length) {
+                        const subUl = document.createElement('ul');
+                        subUl.className = 'tree-node';
+
+                        let allTracksDownloaded = true;
+
+                        function buildSub(arr, container) {
+                            for (const sub of arr) {
+                                cacheItem(sub);
+                                const subKey = `${sub.wrapperType}:${sub.artistId || sub.collectionId || sub.trackId}`;
+                                const subLi = document.createElement('li');
+                                const subToggle = document.createElement('div');
+                                subToggle.className = 'tree-toggle';
+                                subToggle.dataset.nodeKey = subKey;
+                                const icon = sub.wrapperType === 'collection' ? 'bi-disc' : 'bi-music-note';
+                                const label = sub.collectionName || sub.trackName || 'Untitled';
+                                const isSubTrack = sub.wrapperType === 'track';
+                                const subDownloaded = isSubTrack && sub.mirrorUrls?.audioUrl?.url;
+                                if (isSubTrack) subToggle.dataset.downloaded = subDownloaded ? 'true' : 'false';
+                                const subDownloadedIcon = subDownloaded ? '<i class="bi bi-check-circle-fill text-success small ms-1" title="Already downloaded"></i>' : '';
+                                const showSubAddBtn = isSubTrack ? !subDownloaded : true; // hide add if track is downloaded
+
+                                subToggle.innerHTML = `
+                                            <input type="checkbox" class="tree-checkbox form-check-input" data-key="${subKey}" style="width:14px;height:14px;margin:0;flex-shrink:0;" />
+                                            <span class="tree-icon"><i class="bi ${icon}"></i></span>
+                                            <span class="tree-label">${escapeHtml(label)}${subDownloadedIcon}</span>
+                                            <span class="tree-actions">
+                                                ${showSubAddBtn ? `<button class="btn btn-sm btn-outline-primary tree-add" data-key="${subKey}"><i class="bi bi-plus-circle"></i></button>` : ''}
+                                                ${isSubTrack && (sub.mirrorUrls?.audioUrl || sub.mirrorUrls?.previewUrl) ? `<button class="btn btn-sm btn-success tree-play" data-key="${subKey}"><i class="bi bi-play-fill"></i></button>` : ''}
+                                            </span>
+                                        `;
+                                subLi.appendChild(subToggle);
+                                const subCb = subToggle.querySelector('.tree-checkbox');
+                                subCb.addEventListener('change', () => {
+                                    if (subCb.checked) selectedTreeIds.add(subKey);
+                                    else selectedTreeIds.delete(subKey);
+                                    updateTreeBulk();
+                                });
+                                const subAddBtn = subToggle.querySelector('.tree-add');
+                                if (subAddBtn) {
+                                    subAddBtn.addEventListener('click', (e) => {
+                                        e.stopPropagation();
+                                        addSingleItemToQueue(sub);
+                                    });
+                                }
+                                const subPlay = subToggle.querySelector('.tree-play');
+                                if (subPlay) {
+                                    subPlay.addEventListener('click', (e) => {
+                                        e.stopPropagation();
+                                        playTrackFromItem(sub);
+                                    });
+                                }
+                                subToggle.querySelector('.tree-label').addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    activateNode(subKey, sub);
+                                    closeDrawers();
+                                });
+                                container.appendChild(subLi);
+
+                                // Update allTracksDownloaded flag for collections
+                                if (isSubTrack && !subDownloaded) {
+                                    allTracksDownloaded = false;
+                                }
+                            }
+                        }
+                        buildSub(kids, subUl);
+                        childContainer.appendChild(subUl);
+                        expandedNodes.add(itemKey);
+
+                        // After loading all child tracks, update parent collection if applicable
+                        if (item.wrapperType === 'collection') {
+                            collectionDownloadStatus.set(itemKey, allTracksDownloaded);
+                            updateCollectionNodeDisplay(li, itemKey, allTracksDownloaded);
+                        }
+                    } else {
+                        childContainer.innerHTML =
+                            `<div class="tree-loading text-muted">↳ No child items</div>`;
+                        expandedNodes.add(itemKey);
+                        if (item.wrapperType === 'collection') {
+                            collectionDownloadStatus.set(itemKey, false);
+                            updateCollectionNodeDisplay(li, itemKey, false);
+                        }
+                    }
+                }
+            }
+            li.classList.add('open');
+        } else {
+            li.classList.remove('open');
+        }
+    }
+
+    function updateCollectionNodeDisplay(li, itemKey, allDownloaded) {
+        const toggle = li.querySelector('.tree-toggle');
+        if (!toggle) return;
+        if (allDownloaded) {
+            toggle.dataset.downloaded = 'true';
+            // Add download icon if not present
+            const label = toggle.querySelector('.tree-label');
+            if (label && !label.querySelector('.bi-check-circle-fill')) {
+                label.insertAdjacentHTML('beforeend', '<i class="bi bi-check-circle-fill text-success small ms-1" title="All tracks downloaded"></i>');
+            }
+            // Remove add button
+            const addBtn = toggle.querySelector('.tree-add');
+            if (addBtn) addBtn.remove();
+        } else {
+            delete toggle.dataset.downloaded;
+            const icon = toggle.querySelector('.bi-check-circle-fill');
+            if (icon) icon.remove();
+            // Ensure add button exists if missing (for later re-adding)
+            if (!toggle.querySelector('.tree-add')) {
+                const actions = toggle.querySelector('.tree-actions');
+                if (actions) {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn btn-sm btn-outline-primary tree-add';
+                    btn.dataset.key = itemKey;
+                    btn.title = 'Add to queue';
+                    btn.innerHTML = '<i class="bi bi-plus-circle"></i>';
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const found = currentTreeItems.find(t => t.key === itemKey);
+                        if (found) addSingleItemToQueue(found.item);
+                    });
+                    actions.prepend(btn);
+                }
+            }
+        }
+    }
+
+    function updateTreeBulk() {
+        const count = selectedTreeIds.size;
+        treeSelectedCount.textContent = count;
+        treeBulkBar.style.display = count > 0 ? 'flex' : 'none';
+    }
+
+    function treeSelectAll() {
+        $$('.tree-checkbox').forEach(cb => { cb.checked = true;
+            selectedTreeIds.add(cb.dataset.key); });
+        updateTreeBulk();
+    }
+
+    function treeSelectNone() {
+        selectedTreeIds.clear();
+        $$('.tree-checkbox').forEach(cb => cb.checked = false);
+        updateTreeBulk();
+    }
+
+    function treeExpandAll() {
+        $$('.tree-node li').forEach(li => li.classList.add('open'));
+    }
+
+    function treeCollapseAll() {
+        $$('.tree-node li').forEach(li => li.classList.remove('open'));
+    }
+
+    function closeDrawers() {
+        sidebar.classList.remove('open');
+        rightPanel.classList.remove('open');
+    }
+
+    // ================================================================
+    //  ACTIVATE NODE
+    // ================================================================
+    function activateNode(itemKey, item) {
+        $$('.tree-toggle').forEach(el => el.classList.remove('active-node'));
+        const el = document.querySelector(`[data-node-key="${itemKey}"]`);
+        if (el) {
+            el.classList.add('active-node');
+            let parent = el.closest('li');
+            while (parent) {
+                parent.classList.add('open');
+                parent = parent.parentElement?.closest('li');
+            }
+            el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+        renderDiscover(item);
+        renderRightPanel(item);
+        if (item.wrapperType === 'track') {
+            renderDownloads(item);
+        }
+    }
+
+    window.routeToInternalLink = async function(type, id) {
+        const key = `${type}:${id}`;
+        let item = globalLookupMap.get(key);
+        if (!item) {
+            try {
+                const resp = await apiCall(`/lookup?id=${cleanId(id)}`);
+                if (resp.results && resp.results.length) {
+                    item = resp.results[0];
+                    cacheItem(item);
+                }
+            } catch (e) {
+                showToast('Error loading item: ' + e.message, true);
+                return;
+            }
+        }
+        if (item) {
+            document.querySelector('[data-bs-target="#pane-discover"]').click();
+            activateNode(key, item);
+        } else {
+            showToast('Item not found', true);
+        }
+    };
+
+    // ================================================================
+    //  RENDER DISCOVER (with synced lyrics highlight)
+    // ================================================================
+    async function renderDiscover(item) {
+        const type = item.wrapperType;
+        let fresh = item;
+        try {
+            let id = item.trackId || item.collectionId || item.artistId;
+            if (id) {
+                const resp = await apiCall(`/lookup?id=${cleanId(id)}`);
+                if (resp.results && resp.results.length) {
+                    fresh = resp.results[0];
+                    cacheItem(fresh);
+                }
+            }
+        } catch {}
+
+        const container = discoverWorkspace;
+
+        if (type === 'artist') {
+            container.innerHTML = `
+                        <div class="d-flex align-items-center gap-2 mb-3">
+                            <h4 class="mb-0"><i class="bi bi-person-fill text-primary me-1"></i> ${escapeHtml(fresh.artistName)}</h4>
+                            <button class="btn btn-sm btn-success ms-auto" onclick="addAllToQueueByType('artist','${cleanId(fresh.artistId)}','${escapeHtml(fresh.artistName)}')"><i class="bi bi-plus-circle"></i> Add All</button>
+                        </div>
+                        <div class="meta-grid mb-3">
+                            <div class="meta-item"><label>ID</label><div>${fresh.artistId}</div></div>
+                            <div class="meta-item"><label>Genre</label><div>${escapeHtml(fresh.primaryGenreName || 'Unknown')}</div></div>
+                            <div class="meta-item"><label>Link</label><div><a href="${fresh.artistLinkUrl}" target="_blank" class="small">View on Apple Music</a></div></div>
+                        </div>
+                        <h6 class="mt-3"><i class="bi bi-disc me-1"></i> Albums</h6>
+                        <div id="discoverSubList"><div class="text-muted small"><i class="bi bi-arrow-clockwise me-1"></i> Loading…</div></div>
+                    `;
+            try {
+                const subs = await fetchAllChildren(fresh);
+                const subContainer = container.querySelector('#discoverSubList');
+                if (!subs.length) { subContainer.innerHTML =
+                    '<div class="text-muted small">No albums found.</div>'; return; }
+                let html = '<div class="list-group list-group-flush">';
+                for (const alb of subs) {
+                    cacheItem(alb);
+                    html += `
+                                <div class="list-group-item d-flex align-items-center gap-2">
+                                    <i class="bi bi-disc text-secondary"></i>
+                                    <span class="cursor-pointer text-primary" onclick="routeToInternalLink('collection','${alb.collectionId}')">${escapeHtml(alb.collectionName)}</span>
+                                    <span class="badge bg-secondary ms-auto">${alb.trackCount || 0} tracks</span>
+                                    <button class="btn btn-sm btn-outline-success" onclick="addAllToQueueByType('album','${cleanId(alb.collectionId)}','${escapeHtml(alb.collectionName)}')"><i class="bi bi-plus-circle"></i></button>
+                                </div>
+                            `;
+                }
+                html += '</div>';
+                subContainer.innerHTML = html;
+            } catch (e) { console.warn(e); }
+
+        } else if (type === 'collection') {
+            container.innerHTML = `
+                        <div class="d-flex align-items-center gap-2 mb-3">
+                            <h4 class="mb-0"><i class="bi bi-disc-fill text-primary me-1"></i> ${escapeHtml(fresh.collectionName)}</h4>
+                            <button class="btn btn-sm btn-success ms-auto" onclick="addAllToQueueByType('album','${cleanId(fresh.collectionId)}','${escapeHtml(fresh.collectionName)}')"><i class="bi bi-plus-circle"></i> Add All</button>
+                        </div>
+                        <div class="meta-grid mb-3">
+                            <div class="meta-item"><label>Artist</label><div><span class="cursor-pointer text-primary" onclick="routeToInternalLink('artist','${fresh.artistId}')">${escapeHtml(fresh.artistName)}</span></div></div>
+                            <div class="meta-item"><label>Year</label><div>${fresh.releaseDate ? new Date(fresh.releaseDate).getFullYear() : '—'}</div></div>
+                            <div class="meta-item"><label>Tracks</label><div>${fresh.trackCount || 0}</div></div>
+                            <div class="meta-item"><label>Copyright</label><div class="small">${escapeHtml(fresh.copyright || 'None')}</div></div>
+                        </div>
+                        <h6 class="mt-3"><i class="bi bi-list-ul me-1"></i> Tracks</h6>
+                        <div id="discoverSubList"><div class="text-muted small"><i class="bi bi-arrow-clockwise me-1"></i> Loading…</div></div>
+                    `;
+            try {
+                const subs = await fetchAllChildren(fresh);
+                const subContainer = container.querySelector('#discoverSubList');
+                if (!subs.length) { subContainer.innerHTML =
+                    '<div class="text-muted small">No tracks found.</div>'; return; }
+                let html = '<div class="list-group list-group-flush">';
+                for (const trk of subs) {
+                    cacheItem(trk);
+                    const dur = trk.trackTimeMillis ?
+                        `${Math.floor(trk.trackTimeMillis / 60000)}:${Math.floor((trk.trackTimeMillis % 60000) / 1000).toString().padStart(2, '0')}` :
+                        '—';
+                    const hasAudio = !!(trk.mirrorUrls?.audioUrl || trk.mirrorUrls?.previewUrl);
+                    const isDownloaded = trk.mirrorUrls?.audioUrl?.url;
+                    html += `
+                                <div class="list-group-item d-flex align-items-center gap-2">
+                                    <span class="badge bg-secondary">${trk.trackNumber || 1}</span>
+                                    <span class="cursor-pointer text-primary" onclick="routeToInternalLink('track','${trk.trackId}')">${escapeHtml(trk.trackName)}</span>
+                                    <span class="text-muted small">${dur}</span>
+                                    ${isDownloaded ? '<i class="bi bi-check-circle-fill text-success small ms-1" title="Already downloaded"></i>' : ''}
+                                    ${hasAudio ? `<button class="btn btn-sm btn-success" onclick="playTrackFromItemById('${trk.trackId}')"><i class="bi bi-play-fill"></i></button>` : ''}
+                                    <button class="btn btn-sm btn-outline-primary ms-auto" onclick="addAllToQueueByType('track','${cleanId(trk.trackId)}','${escapeHtml(trk.trackName)}')"><i class="bi bi-plus-circle"></i></button>
+                                </div>
+                            `;
+                }
+                html += '</div>';
+                subContainer.innerHTML = html;
+            } catch (e) { console.warn(e); }
+
+        } else if (type === 'track') {
+            const dur = fresh.trackTimeMillis ?
+                `${Math.floor(fresh.trackTimeMillis / 60000)}:${Math.floor((fresh.trackTimeMillis % 60000) / 1000).toString().padStart(2, '0')}` :
+                '—';
+            const hasAudio = !!(fresh.mirrorUrls?.audioUrl || fresh.mirrorUrls?.previewUrl);
+            const isDownloaded = fresh.mirrorUrls?.audioUrl?.url;
+            const artwork600 = getArtwork600(fresh);
+
+            let lyricsData = null;
+            if (fresh.lyrics) {
+                lyricsData = fresh.lyrics;
+            } else {
+                try {
+                    const resp = await apiCall(`/lyrics/get?id=${cleanId(fresh.trackId)}`);
+                    if (resp.success && resp.lyrics) lyricsData = resp.lyrics;
+                } catch {}
+            }
+
+            container.innerHTML = `
+                        <div class="d-flex align-items-center gap-2 mb-3">
+                            <h4 class="mb-0"><i class="bi bi-music-note-beamed text-primary me-1"></i> ${escapeHtml(fresh.trackName)}</h4>
+                            ${isDownloaded ? '<span class="badge bg-success"><i class="bi bi-check-circle"></i> Downloaded</span>' : ''}
+                            <button class="btn btn-sm btn-success ms-auto" onclick="addAllToQueueByType('track','${cleanId(fresh.trackId)}','${escapeHtml(fresh.trackName)}')"><i class="bi bi-plus-circle"></i> Add</button>
+                            ${hasAudio ? `<button class="btn btn-sm btn-success" onclick="playTrackFromItemById('${fresh.trackId}')"><i class="bi bi-play-fill"></i> Play</button>` : ''}
+                        </div>
+                        <div class="meta-grid mb-3">
+                            <div class="meta-item"><label>Artist</label><div><span class="cursor-pointer text-primary" onclick="routeToInternalLink('artist','${fresh.artistId}')">${escapeHtml(fresh.artistName)}</span></div></div>
+                            <div class="meta-item"><label>Album</label><div><span class="cursor-pointer text-primary" onclick="routeToInternalLink('collection','${fresh.collectionId}')">${escapeHtml(fresh.collectionName || 'Single')}</span></div></div>
+                            <div class="meta-item"><label>Duration</label><div>${dur}</div></div>
+                            <div class="meta-item"><label>Track #</label><div>${fresh.trackNumber || 1} / ${fresh.trackCount || 1}</div></div>
+                        </div>
+                        ${renderLyricsHTML(lyricsData, fresh.trackId)}
+                        <div class="mt-3" id="discoverDownloads">
+                            ${renderDownloadBox(fresh)}
+                        </div>
+                    `;
+
+            container.querySelectorAll('.lyrics-tab-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const parent = this.closest('.lyrics-section');
+                    parent.querySelectorAll('.lyrics-tab-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    const target = this.dataset.tab;
+                    const sync = parent.querySelector('.lyrics-synced');
+                    const plain = parent.querySelector('.lyrics-unsynced');
+                    if (sync) sync.style.display = target === 'synced' ? 'block' : 'none';
+                    if (plain) plain.style.display = target === 'unsynced' ? 'block' : 'none';
+                });
+            });
+
+            if (audio && audio.src && isPlaying) {
+                updateSyncedLyrics();
+            }
+        }
+    }
+
+    // ================================================================
+    //  SYNCED LYRICS – parse & highlight
+    // ================================================================
+    let syncedLinesData = [];
+    let syncedLinesContainer = null;
+
+    function parseSyncedLyrics(lyricsData) {
+        const lines = [];
+        if (!lyricsData) return lines;
+        let raw = '';
+        if (Array.isArray(lyricsData) && lyricsData.length && lyricsData[0].time !== undefined) {
+            raw = lyricsData.map(l => `[${l.time}] ${l.text || l.line || ''}`).join('\n');
+        } else if (lyricsData.synced && Array.isArray(lyricsData.synced)) {
+            raw = lyricsData.synced.map(l => `[${l.time}] ${l.text || l.line || ''}`).join('\n');
+        } else if (typeof lyricsData === 'string') {
+            raw = lyricsData;
+        } else if (lyricsData.unsynced && typeof lyricsData.unsynced === 'string') {
+            raw = lyricsData.unsynced;
+        } else if (lyricsData.plain && typeof lyricsData.plain === 'string') {
+            raw = lyricsData.plain;
+        } else if (lyricsData.lyrics && typeof lyricsData.lyrics === 'string') {
+            raw = lyricsData.lyrics;
+        } else if (lyricsData.text && typeof lyricsData.text === 'string') {
+            raw = lyricsData.text;
+        }
+        const regex = /\[(\d+):(\d+)(?:\.(\d+))?\](.*)/g;
+        let match;
+        while ((match = regex.exec(raw)) !== null) {
+            const m = parseInt(match[1]);
+            const s = parseInt(match[2]);
+            const ms = parseInt(match[3] || '0');
+            const time = m * 60 + s + ms / 100;
+            const text = match[4].trim();
+            if (text) lines.push({ time, text, raw: match[0] });
+        }
+        if (!lines.length) return null;
+        return lines;
+    }
+
+    function renderLyricsHTML(data, trackId) {
+        let html = `<div class="lyrics-section mt-2">`;
+        let hasSynced = false,
+            hasUnsynced = false;
+        let syncedLines = [];
+        let plainText = '';
+
+        if (data && typeof data === 'object') {
+            if (Array.isArray(data) && data.length && data[0].time !== undefined) {
+                hasSynced = true;
+                syncedLines = data;
+            } else if (data.synced && Array.isArray(data.synced) && data.synced.length) {
+                hasSynced = true;
+                syncedLines = data.synced;
+            }
+            if (typeof data === 'string') {
+                hasUnsynced = true;
+                plainText = data;
+            } else if (data.unsynced && typeof data.unsynced === 'string') {
+                hasUnsynced = true;
+                plainText = data.unsynced;
+            } else if (data.plain && typeof data.plain === 'string') {
+                hasUnsynced = true;
+                plainText = data.plain;
+            } else if (data.lyrics && typeof data.lyrics === 'string') {
+                hasUnsynced = true;
+                plainText = data.lyrics;
+            } else if (data.text && typeof data.text === 'string') {
+                hasUnsynced = true;
+                plainText = data.text;
+            }
+        } else if (typeof data === 'string') {
+            hasUnsynced = true;
+            plainText = data;
+        }
+
+        if (!hasSynced && hasUnsynced) {
+            const parsed = parseSyncedLyrics(plainText);
+            if (parsed && parsed.length) {
+                hasSynced = true;
+                syncedLines = parsed;
+            }
+        }
+
+        if (!hasSynced && !hasUnsynced) {
+            html += `
+                        <div class="text-muted small py-2">No lyrics available.</div>
+                        <button class="btn btn-sm btn-outline-primary" onclick="fetchLyricsForTrack('${trackId}')"><i class="bi bi-cloud-download"></i> Fetch</button>
+                    `;
+        } else {
+            html += `<div class="d-flex gap-1 mb-1">`;
+            if (hasSynced) html +=
+                `<button class="btn btn-sm btn-outline-primary lyrics-tab-btn active" data-tab="synced">Synced</button>`;
+            if (hasUnsynced) html +=
+                `<button class="btn btn-sm btn-outline-secondary lyrics-tab-btn ${!hasSynced ? 'active' : ''}" data-tab="unsynced">Unsynced</button>`;
+            html +=
+                `<button class="btn btn-sm btn-outline-secondary ms-auto" onclick="copyLyricsFromContainer(this)"><i class="bi bi-copy"></i></button>`;
+            html += `</div>`;
+
+            html += `<div class="lyrics-container" id="lyricsContainer_${trackId}">`;
+            if (hasSynced) {
+                const parsed = parseSyncedLyrics(syncedLines);
+                if (parsed && parsed.length) {
+                    html += `<div class="lyrics-synced" style="display:block;">`;
+                    for (const line of parsed) {
+                        const timeStr = formatTime(line.time);
+                        html +=
+                            `<span class="synced-line" data-time="${line.time}"><span class="timestamp">[${timeStr}]</span> ${escapeHtml(line.text)}</span>`;
+                    }
+                    html += `</div>`;
+                    syncedLinesData = parsed;
+                    syncedLinesContainer = `lyricsContainer_${trackId}`;
+                } else {
+                    html += `<div class="lyrics-synced" style="display:block;">${escapeHtml(plainText || '')}</div>`;
+                }
+            }
+            if (hasUnsynced) {
+                html +=
+                    `<div class="lyrics-unsynced" style="display:${!hasSynced ? 'block' : 'none'};">${escapeHtml(plainText)}</div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+        return html;
+    }
+
+    function updateSyncedLyrics() {
+        if (!audio || !audio.currentTime) return;
+        const time = audio.currentTime;
+        const container = document.querySelector(`#${syncedLinesContainer}`);
+        if (!container) return;
+        const lines = container.querySelectorAll('.synced-line');
+        let activeIdx = -1;
+        for (let i = 0; i < lines.length; i++) {
+            const t = parseFloat(lines[i].dataset.time);
+            if (!isNaN(t) && t <= time) {
+                activeIdx = i;
+            }
+        }
+        lines.forEach((el, idx) => {
+            el.classList.toggle('active', idx === activeIdx);
+        });
+        if (activeIdx >= 0) {
+            const activeEl = lines[activeIdx];
+            if (activeEl) {
+                const containerRect = container.getBoundingClientRect();
+                const elRect = activeEl.getBoundingClientRect();
+                if (elRect.top < containerRect.top || elRect.bottom > containerRect.bottom) {
+                    activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }
+            }
+        }
+    }
+
+    window.fetchLyricsForTrack = async function(trackId) {
+        if (!trackId) return;
+        showToast('Fetching lyrics…');
+        try {
+            const resp = await apiCall(`/lyrics/get?id=${trackId}`);
+            if (resp.success) {
+                showToast('Lyrics updated');
+                const item = globalLookupMap.get(`track:${trackId}`);
+                if (item) {
+                    item.lyrics = resp.lyrics;
+                    await renderDiscover(item);
+                }
+            } else {
+                showToast('Failed: ' + (resp.error || 'Unknown'), true);
+            }
+        } catch (e) {
+            showToast('Error: ' + e.message, true);
+        }
+    };
+
+    window.copyLyricsFromContainer = function(btn) {
+        const container = btn.closest('.lyrics-section').querySelector('.lyrics-container');
+        if (!container) return;
+        const visible = container.querySelector('[style*="display: block"]') || container.querySelector(
+            '[style*="display:block"]') || container;
+        const text = visible.innerText || visible.textContent || '';
+        if (text) {
+            navigator.clipboard.writeText(text).then(() => showToast('Copied!')).catch(() => {
+                const range = document.createRange();
+                range.selectNode(visible);
+                window.getSelection().removeAllRanges();
+                window.getSelection().addRange(range);
+                document.execCommand('copy');
+                window.getSelection().removeAllRanges();
+                showToast('Copied!');
+            });
+        }
+    };
+
+    // ================================================================
+    //  DOWNLOAD BOX – with background download + progress
+    // ================================================================
+    function renderDownloadBox(item) {
+        const mirror = item.mirrorUrls || {};
+        const hasAudio = mirror.audioUrl || mirror.previewUrl;
+        if (!hasAudio) return '';
+
+        const artwork600 = getArtwork600(item);
+        const trackId = item.trackId || item.collectionId || '';
+
+        let html = `<div class="download-box"><h6 class="mb-1"><i class="bi bi-cloud-download me-1"></i> Downloads</h6>`;
+
+        if (mirror.audioUrl) {
+            const url = mirror.audioUrl.url;
+            const quality = mirror.audioUrl.quality || '192';
+            const proxied = getProxiedAudioUrl(url);
+            if (proxied) {
+                html += `
+                            <div class="mirror-item">
+                                <i class="bi bi-music-note text-primary"></i>
+                                <span>Audio <span class="badge-quality">${quality}</span></span>
+                                <button class="btn btn-sm btn-success" onclick="startBackgroundDownload('${escapeHtml(proxied)}','${escapeHtml(item.trackName || 'track')}','${escapeHtml(item.artistName || '')}','${escapeHtml(artwork600)}','${trackId}','audio')"><i class="bi bi-cloud-download"></i></button>
+                                <button class="btn btn-sm btn-primary" onclick="playAudioUrl('${escapeHtml(proxied)}','${escapeHtml(item.trackName || '')}','${escapeHtml(item.artistName || '')}','${escapeHtml(artwork600)}','${trackId}')"><i class="bi bi-play-fill"></i></button>
+                            </div>
+                        `;
+            }
+        }
+
+        if (mirror.previewUrl) {
+            const url = mirror.previewUrl.url;
+            const proxied = getProxiedAudioUrl(url);
+            if (proxied) {
+                html += `
+                            <div class="mirror-item">
+                                <i class="bi bi-music-note text-warning"></i>
+                                <span>Preview</span>
+                                <button class="btn btn-sm btn-outline-success" onclick="startBackgroundDownload('${escapeHtml(proxied)}','${escapeHtml(item.trackName || 'preview')}','${escapeHtml(item.artistName || '')}','${escapeHtml(artwork600)}','${trackId}','preview')"><i class="bi bi-cloud-download"></i></button>
+                                <button class="btn btn-sm btn-outline-primary" onclick="playAudioUrl('${escapeHtml(proxied)}','${escapeHtml(item.trackName || 'Preview')}','${escapeHtml(item.artistName || '')}','${escapeHtml(artwork600)}','${trackId}')"><i class="bi bi-play-fill"></i></button>
+                            </div>
+                        `;
+            }
+        }
+
+        if (artwork600) {
+            html += `
+                        <div class="mirror-item">
+                            <i class="bi bi-image text-secondary"></i>
+                            <span>Cover Art (600x600)</span>
+                            <a href="${escapeHtml(artwork600)}" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-download"></i></a>
+                            <a href="${escapeHtml(artwork600)}" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i></a>
+                        </div>
+                    `;
+        }
+
+        html += `</div>`;
+        return html;
+    }
+
+    function renderDownloads(item) {
+        const container = document.getElementById('downloadsWorkspace');
+        if (item.wrapperType !== 'track') {
+            container.innerHTML = `
+                        <div class="text-center text-muted py-5">
+                            <i class="bi bi-cloud-download display-4"></i>
+                            <p class="mt-2">Select a track to see download options.</p>
+                        </div>
+                    `;
+            return;
+        }
+        const html = renderDownloadBox(item);
+        container.innerHTML = html ||
+            `<div class="text-muted py-3 text-center">No downloads available for this track.</div>`;
+    }
+
+    // ================================================================
+    //  BACKGROUND DOWNLOAD ENGINE (with caching)
+    // ================================================================
+    let activeDownloads = {};
+    let cachedAudioBlobs = {}; // key: trackId, value: Blob
+
+    function getDownloadsList() {
+        try {
+            return JSON.parse(localStorage.getItem('music_hub_downloads') || '[]');
+        } catch { return []; }
+    }
+
+    function saveDownloadsList(list) {
+        localStorage.setItem('music_hub_downloads', JSON.stringify(list));
+    }
+
+    function addDownloadTask(task) {
+        const list = getDownloadsList();
+        task.id = Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        task.status = 'pending';
+        task.progress = 0;
+        task.created = Date.now();
+        list.push(task);
+        saveDownloadsList(list);
+        renderDownloadTasks();
+        document.querySelector('[data-bs-target="#pane-downloads"]').click();
+    }
+
+    function updateDownloadTask(id, updates) {
+        const list = getDownloadsList();
+        const idx = list.findIndex(t => t.id === id);
+        if (idx >= 0) {
+            Object.assign(list[idx], updates);
+            saveDownloadsList(list);
+            renderDownloadTasks();
+        }
+    }
+
+    function removeDownloadTask(id) {
+        let list = getDownloadsList();
+        list = list.filter(t => t.id !== id);
+        saveDownloadsList(list);
+        renderDownloadTasks();
+    }
+
+    window.startBackgroundDownload = async function(url, name, artist, artwork, trackId, type) {
+        if (!canDownload()) {
+            showToast(`⛔ Rate limit: ${RATE_LIMIT} downloads per 10 minutes. Please wait.`, true);
+            return;
+        }
+
+        const existing = getDownloadsList().find(t => t.url === url && t.status !== 'completed' && t.status !==
+            'failed');
+        if (existing) {
+            showToast('⏳ Already downloading this file.', true);
+            return;
+        }
+
+        const task = {
+            url,
+            name: name || 'track',
+            artist: artist || '',
+            artwork: artwork || '',
+            trackId: trackId || '',
+            type: type || 'audio',
+            status: 'pending',
+            progress: 0,
+            downloaded: 0,
+            total: 0,
+            error: null,
+        };
+        addDownloadTask(task);
+        downloadFile(task.id, url, name, artist, artwork, trackId, type);
+    };
+
+    async function downloadFile(id, url, name, artist, artwork, trackId, type) {
+        try {
+            updateDownloadTask(id, { status: 'downloading' });
+
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const contentLength = response.headers.get('content-length');
+            const total = contentLength ? parseInt(contentLength) : 0;
+            updateDownloadTask(id, { total });
+
+            const reader = response.body.getReader();
+            const chunks = [];
+            let downloaded = 0;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                downloaded += value.length;
+                if (total) {
+                    const progress = Math.round((downloaded / total) * 100);
+                    updateDownloadTask(id, { progress, downloaded });
+                } else {
+                    updateDownloadTask(id, { downloaded });
+                }
+            }
+
+            const blob = new Blob(chunks);
+            const blobUrl = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            const ext = url.split('.').pop().split('?')[0] || 'mp3';
+            const filename = `${name.replace(/[^a-zA-Z0-9]/g,'_')}.mp3`;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+
+            if (trackId) {
+                cachedAudioBlobs[trackId] = blob;
+            }
+
+            updateDownloadTask(id, { status: 'completed', progress: 100 });
+
+            if (trackId) {
+                recordDownload(trackId);
+                markTrackAdded(trackId);
+            } else {
+                recordDownload('unknown');
+            }
+
+            showToast(`✅ Downloaded: ${name}`);
+
+        } catch (err) {
+            updateDownloadTask(id, { status: 'failed', error: err.message });
+            showToast(`❌ Download failed: ${err.message}`, true);
+        }
+    }
+
+    function renderDownloadTasks() {
+        const container = downloadsWorkspace;
+        const list = getDownloadsList();
+
+        if (!list.length) {
+            container.innerHTML = `
+                        <div class="text-center text-muted py-5">
+                            <i class="bi bi-cloud-download display-4"></i>
+                            <p class="mt-2">No active downloads.</p>
+                            <p class="small">Click any download to view track details.</p>
+                        </div>
+                    `;
+            return;
+        }
+
+        const sorted = [...list].reverse();
+        let html = `
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <span class="badge bg-primary">${list.length} tasks</span>
+                        <button class="btn btn-sm btn-outline-danger ms-auto" onclick="clearCompletedDownloads()"><i class="bi bi-trash3"></i> Clear completed</button>
+                    </div>
+                `;
+        for (const task of sorted) {
+            const statusIcon = {
+                'pending': '⏳',
+                'downloading': '⬇️',
+                'completed': '✅',
+                'failed': '❌',
+                'paused': '⏸️'
+            } [task.status] || '⏳';
+            const statusLabel = task.status.toUpperCase();
+            const pct = task.progress || 0;
+            const isComplete = task.status === 'completed';
+            const isFailed = task.status === 'failed';
+            const canPlay = isComplete && cachedAudioBlobs[task.trackId];
+
+            html += `
+                        <div class="download-task-item" onclick="if('${task.trackId}' && '${task.status}' === 'completed') { routeToInternalLink('track','${task.trackId}'); }" title="Click to view track details">
+                            <div class="task-meta">
+                                ${task.artwork ? `<img src="${escapeHtml(task.artwork)}" style="width:36px;height:36px;border-radius:0.2rem;object-fit:cover;flex-shrink:0;" />` : `<div style="width:36px;height:36px;background:var(--bs-secondary-bg);border-radius:0.2rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="bi bi-music-note"></i></div>`}
+                                <div style="flex:1;min-width:0;">
+                                    <div style="font-weight:600;font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.name)}</div>
+                                    <div style="font-size:0.7rem;color:var(--bs-secondary-color);">${escapeHtml(task.artist || '—')}</div>
+                                </div>
+                                <span class="task-status" style="color:${isComplete ? 'var(--bs-success)' : isFailed ? 'var(--bs-danger)' : 'var(--bs-warning)'}">${statusIcon} ${statusLabel}</span>
+                                ${!isComplete && !isFailed ? `<span style="font-size:0.75rem;font-weight:600;">${pct}%</span>` : ''}
+                                ${canPlay ? `<button class="btn btn-sm btn-success" onclick="event.stopPropagation(); playCachedTrack('${task.trackId}')" title="Play from cache"><i class="bi bi-play-fill"></i></button>` : ''}
+                                <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); removeDownloadTask('${task.id}')" title="Remove"><i class="bi bi-x"></i></button>
+                            </div>
+                            ${!isComplete && !isFailed ? `
+                                <div class="download-progress"><div class="bar" style="width:${pct}%;"></div></div>
+                            ` : ''}
+                            ${isFailed ? `<div class="text-danger small">${escapeHtml(task.error || 'Unknown error')}</div>` : ''}
+                            ${isComplete ? `<div class="text-success small"><i class="bi bi-check-circle"></i> Done</div>` : ''}
+                        </div>
+                    `;
+        }
+        container.innerHTML = html;
+        updateRateBadge();
+    }
+
+    function clearCompletedDownloads() {
+        let list = getDownloadsList();
+        list = list.filter(t => t.status !== 'completed');
+        saveDownloadsList(list);
+        renderDownloadTasks();
+        showToast('🧹 Cleared completed downloads');
+    }
+
+    window.playCachedTrack = function(trackId) {
+        const blob = cachedAudioBlobs[trackId];
+        if (!blob) return showToast('No cached file', true);
+        const blobUrl = URL.createObjectURL(blob);
+        playAudioUrl(blobUrl, 'Cached Track', '', '', trackId);
+    };
+
+    // ================================================================
+    //  RIGHT PANEL (metadata)
+    // ================================================================
+    function renderRightPanel(item) {
+        const type = item.wrapperType;
+        const title = item.trackName || item.collectionName || item.artistName || '—';
+        const artist = item.artistName || (type === 'artist' ? 'Artist' : '—');
+        const genre = item.primaryGenreName || '—';
+        const date = item.releaseDate ? new Date(item.releaseDate).toLocaleDateString() : '—';
+        const artwork600 = getArtwork600(item);
+
+        let addHandler = '';
+        let addLabel = 'Add to Queue';
+        if (type === 'track' && item.trackId) {
+            addHandler = `addAllToQueueByType('track','${cleanId(item.trackId)}','${escapeHtml(title)}')`;
+            addLabel = 'Add Track';
+        } else if (type === 'collection' && item.collectionId) {
+            addHandler = `addAllToQueueByType('album','${cleanId(item.collectionId)}','${escapeHtml(title)}')`;
+            addLabel = 'Add All Tracks';
+        } else if (type === 'artist' && item.artistId) {
+            addHandler = `addAllToQueueByType('artist','${cleanId(item.artistId)}','${escapeHtml(title)}')`;
+            addLabel = 'Add All Albums';
+        }
+
+        let playBtn = '';
+        if (type === 'track' && (item.mirrorUrls?.audioUrl || item.mirrorUrls?.previewUrl)) {
+            const audioRaw = item.mirrorUrls?.audioUrl?.url || item.mirrorUrls?.previewUrl?.url;
+            if (audioRaw) {
+                const proxied = getProxiedAudioUrl(audioRaw);
+                if (proxied) {
+                    playBtn =
+                        `<button class="btn btn-success w-100 mb-2" onclick="playAudioUrl('${escapeHtml(proxied)}','${escapeHtml(title)}','${escapeHtml(artist)}','${escapeHtml(artwork600 || '')}','${item.trackId}')"><i class="bi bi-play-fill"></i> Play</button>`;
+                }
+            }
+        }
+
+        rightPanelContent.innerHTML = `
+                    <div class="text-center mb-2">
+                        ${artwork600 ? `<img src="${artwork600}" class="img-fluid rounded" style="max-width:160px;border:1px solid var(--bs-border-color);" />` : `<div class="p-4 bg-secondary bg-opacity-10 rounded"><i class="bi bi-music-note display-4 text-secondary"></i></div>`}
+                    </div>
+                    <h6 class="text-center fw-bold">${escapeHtml(title)}</h6>
+                    ${playBtn}
+                    <div class="meta-grid">
+                        <div class="meta-item"><label>Type</label><div>${type.toUpperCase()}</div></div>
+                        <div class="meta-item"><label>Artist</label><div>${escapeHtml(artist)}</div></div>
+                        <div class="meta-item"><label>Genre</label><div>${escapeHtml(genre)}</div></div>
+                        <div class="meta-item"><label>Release</label><div>${date}</div></div>
+                    </div>
+                    ${addHandler ? `<button class="btn btn-primary w-100 mt-2" onclick="${addHandler}"><i class="bi bi-plus-circle"></i> ${addLabel}</button>` : ''}
+                    ${type === 'track' ? renderDownloadBox(item) : ''}
+                `;
+    }
+
+    // ================================================================
+    //  AUDIO PLAYER (with caching support)
+    // ================================================================
+    let audio = null;
+    let currentTrack = null;
+    let isPlaying = false;
+    let playerQueue = [];
+    let playerIndex = -1;
+
+    function initAudioPlayer() {
+        audio = new Audio();
+        audio.volume = parseInt(playerVolume.value) / 100;
+
+        audio.addEventListener('timeupdate', () => {
+            if (audio.duration) {
+                const pct = (audio.currentTime / audio.duration) * 1000;
+                playerProgress.value = Math.min(pct, 1000);
+                playerCurrentTime.textContent = formatTime(audio.currentTime);
+                updateSyncedLyrics();
+            }
+        });
+
+        audio.addEventListener('loadedmetadata', () => {
+            playerDuration.textContent = formatTime(audio.duration);
+            playerProgress.value = 0;
+            playerCurrentTime.textContent = '0:00';
+        });
+
+        audio.addEventListener('ended', () => {
+            isPlaying = false;
+            playerPlay.innerHTML = '<i class="bi bi-play-fill"></i>';
+            playNext();
+        });
+
+        audio.addEventListener('play', () => {
+            isPlaying = true;
+            playerPlay.innerHTML = '<i class="bi bi-pause-fill"></i>';
+        });
+
+        audio.addEventListener('pause', () => {
+            isPlaying = false;
+            playerPlay.innerHTML = '<i class="bi bi-play-fill"></i>';
+        });
+
+        audio.addEventListener('error', () => {
+            showToast('Audio playback error', true);
+            isPlaying = false;
+            playerPlay.innerHTML = '<i class="bi bi-play-fill"></i>';
+        });
+
+        playerProgress.addEventListener('input', () => {
+            if (audio.duration) {
+                const pct = parseInt(playerProgress.value) / 1000;
+                audio.currentTime = pct * audio.duration;
+            }
+        });
+
+        playerVolume.addEventListener('input', () => {
+            const val = parseInt(playerVolume.value) / 100;
+            audio.volume = val;
+            updateVolumeIcon(val);
+        });
+
+        playerVolumeToggle.addEventListener('click', () => {
+            if (audio.muted) {
+                audio.muted = false;
+                playerVolume.value = 80;
+                audio.volume = 0.8;
+                updateVolumeIcon(0.8);
+            } else {
+                audio.muted = true;
+                playerVolumeToggle.innerHTML = '<i class="bi bi-volume-mute-fill"></i>';
+            }
+        });
+
+        playerPlay.addEventListener('click', () => {
+            if (!audio.src) { showToast('No track loaded'); return; }
+            if (isPlaying) audio.pause();
+            else audio.play().catch(e => showToast('Cannot play: ' + e.message, true));
+        });
+
+        playerClose.addEventListener('click', () => {
+            audio.pause();
+            audio.src = '';
+            currentTrack = null;
+            isPlaying = false;
+            playerPlay.innerHTML = '<i class="bi bi-play-fill"></i>';
+            playerTitle.textContent = 'No track loaded';
+            playerArtist.textContent = '—';
+            playerArtwork.innerHTML = '<i class="bi bi-music-note"></i>';
+            playerArtwork.style.backgroundImage = 'none';
+            playerArtwork.style.backgroundSize = '';
+            playerCurrentTime.textContent = '0:00';
+            playerDuration.textContent = '0:00';
+            playerProgress.value = 0;
+        });
+
+        playerPrev.addEventListener('click', playPrev);
+        playerNext.addEventListener('click', playNext);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.code === 'Space') { e.preventDefault();
+                playerPlay.click(); }
+            if (e.code === 'ArrowRight' && audio.duration) { audio.currentTime = Math.min(audio.currentTime + 5,
+                audio.duration); }
+            if (e.code === 'ArrowLeft' && audio.duration) { audio.currentTime = Math.max(audio.currentTime - 5,
+                0); }
+            if (e.code === 'ArrowUp') {
+                e.preventDefault();
+                const v = Math.min(100, parseInt(playerVolume.value) + 5);
+                playerVolume.value = v;
+                audio.volume = v / 100;
+                updateVolumeIcon(v / 100);
+            }
+            if (e.code === 'ArrowDown') {
+                e.preventDefault();
+                const v = Math.max(0, parseInt(playerVolume.value) - 5);
+                playerVolume.value = v;
+                audio.volume = v / 100;
+                updateVolumeIcon(v / 100);
+            }
+        });
+    }
+
+    function updateVolumeIcon(val) {
+        if (val === 0) playerVolumeToggle.innerHTML = '<i class="bi bi-volume-off-fill"></i>';
+        else if (val < 0.4) playerVolumeToggle.innerHTML = '<i class="bi bi-volume-down-fill"></i>';
+        else playerVolumeToggle.innerHTML = '<i class="bi bi-volume-up-fill"></i>';
+        if (audio) audio.muted = false;
+    }
+
+    function playAudioUrl(url, trackName, artistName, artworkUrl, trackId = '') {
+        if (!url) { showToast('No audio URL', true); return; }
+        try {
+            let src = url;
+            if (trackId && cachedAudioBlobs[trackId]) {
+                src = URL.createObjectURL(cachedAudioBlobs[trackId]);
+            }
+            audio.src = src;
+            audio.load();
+            audio.play().catch(e => showToast('Cannot play: ' + e.message, true));
+            currentTrack = { trackName, artistName, artworkUrl, trackId };
+            playerTitle.textContent = trackName || 'Track';
+            playerArtist.textContent = artistName || '—';
+            if (artworkUrl) {
+                playerArtwork.innerHTML = '';
+                playerArtwork.style.backgroundImage = `url(${escapeHtml(artworkUrl)})`;
+                playerArtwork.style.backgroundSize = 'cover';
+                playerArtwork.style.backgroundPosition = 'center';
+            } else {
+                playerArtwork.innerHTML = '<i class="bi bi-music-note"></i>';
+                playerArtwork.style.backgroundImage = 'none';
+            }
+            showToast(`▶️ ${trackName || 'Track'}`);
+        } catch (e) {
+            showToast('Error: ' + e.message, true);
+        }
+    }
+
+    window.playAudioUrl = playAudioUrl;
+
+    function playTrackFromItem(item) {
+        if (!item) return;
+        const audioRaw = item.mirrorUrls?.audioUrl?.url || item.mirrorUrls?.previewUrl?.url;
+        if (!audioRaw) { showToast('No audio available', true); return; }
+        const proxied = getProxiedAudioUrl(audioRaw);
+        if (!proxied) { showToast('Invalid audio URL', true); return; }
+        const artwork600 = getArtwork600(item);
+        playAudioUrl(proxied, item.trackName || 'Track', item.artistName || '—', artwork600, item.trackId);
+        addToPlayerQueue(item);
+    }
+
+    window.playTrackFromItemById = async function(trackId) {
+        const key = `track:${trackId}`;
+        let item = globalLookupMap.get(key);
+        if (!item) {
+            try {
+                const resp = await apiCall(`/lookup?id=${cleanId(trackId)}`);
+                if (resp.results && resp.results.length) {
+                    item = resp.results[0];
+                    cacheItem(item);
+                }
+            } catch (e) {
+                showToast('Error loading track', true);
+                return;
+            }
+        }
+        if (item) playTrackFromItem(item);
+        else showToast('Track not found', true);
+    };
+
+    function addToPlayerQueue(item) {
+        const key = item.trackId || item.collectionId || item.artistId;
+        const exists = playerQueue.some(t => (t.trackId || t.collectionId || t.artistId) === key);
+        if (!exists) {
+            playerQueue.push(item);
+            playerIndex = playerQueue.length - 1;
+        }
+    }
+
+    function playPrev() {
+        if (!playerQueue.length || playerIndex <= 0) return;
+        playerIndex--;
+        playTrackFromItem(playerQueue[playerIndex]);
+    }
+
+    function playNext() {
+        if (!playerQueue.length || playerIndex >= playerQueue.length - 1) return;
+        playerIndex++;
+        playTrackFromItem(playerQueue[playerIndex]);
+    }
+
+    // ================================================================
+    //  QUEUE / DOWNLOAD API
+    // ================================================================
+    async function addSingleItemToQueue(item) {
+        // Prevent adding already‑downloaded tracks
+        if (item.wrapperType === 'track' && item.mirrorUrls?.audioUrl?.url) {
+            showToast('⚠️ Track already downloaded – skipped.', true);
+            return;
+        }
+        try {
+            let payload = {};
+            if (item.wrapperType === 'track') payload.trackId = cleanId(item.trackId);
+            else if (item.wrapperType === 'collection') payload.albumId = cleanId(item.collectionId);
+            else if (item.wrapperType === 'artist') payload.artistId = cleanId(item.artistId);
+            else return;
+            payload.quality = '192';
+            payload.skipExisting = true;
+            const result = await apiCall('/download/add', 'POST', payload);
+            const added = result.added_count || 0;
+            if (added > 0 && item.trackId) markTrackAdded(item.trackId);
+            showToast(`✅ Added ${added} item${added > 1 ? 's' : ''} to queue`);
+            loadQueue();
+        } catch (e) {
+            showToast('Error: ' + e.message, true);
+        }
+    }
+
+    window.addAllToQueueByType = async function(type, id, nameHint) {
+        try {
+            let payload = {};
+            if (type === 'artist') payload.artistId = id;
+            else if (type === 'album' || type === 'collection') payload.albumId = id;
+            else if (type === 'track') payload.trackId = id;
+            else { showToast('Invalid type', true); return; }
+            payload.quality = '192';
+            payload.skipExisting = true;
+            const result = await apiCall('/download/add', 'POST', payload);
+            const added = result.added_count || 0;
+            const skipped = result.skipped_count || 0;
+            if (added > 0 && id) markTrackAdded(id);
+            showToast(`✅ Added ${added}${skipped > 0 ? ` (${skipped} already queued)` : ''}`);
+            loadQueue();
+        } catch (e) {
+            showToast('Error: ' + e.message, true);
+        }
+    };
+
+    async function addSelectedToQueue() {
+        if (!selectedTreeIds.size) return;
+        let total = 0;
+        for (const key of selectedTreeIds) {
+            const found = currentTreeItems.find(t => t.key === key);
+            if (!found) continue;
+            const item = found.item;
+            // Skip already downloaded tracks
+            if (item.wrapperType === 'track' && item.mirrorUrls?.audioUrl?.url) {
+                continue;
+            }
+            try {
+                let payload = {};
+                if (item.wrapperType === 'track') payload.trackId = cleanId(item.trackId);
+                else if (item.wrapperType === 'collection') payload.albumId = cleanId(item.collectionId);
+                else if (item.wrapperType === 'artist') payload.artistId = cleanId(item.artistId);
+                else continue;
+                payload.quality = '192';
+                payload.skipExisting = true;
+                const result = await apiCall('/download/add', 'POST', payload);
+                total += result.added_count || 0;
+                if (result.added_count > 0 && item.trackId) markTrackAdded(item.trackId);
+            } catch {}
+        }
+        showToast(`✅ Added ${total} item${total > 1 ? 's' : ''}`);
+        loadQueue();
+        selectedTreeIds.clear();
+        $$('.tree-checkbox').forEach(cb => cb.checked = false);
+        updateTreeBulk();
+    }
+
+    // ================================================================
+    //  QUEUE – INFINITE SCROLL PAGINATION
+    // ================================================================
+    let currentQueueItems = [];
+    let filteredQueueItems = [];
+    let selectedQueueIds = new Set();
+    let queueOffset = 0;
+    let queueLimit = 20;
+    let queueHasMore = true;
+    let isLoadingQueue = false;
+
+    async function loadQueuePage() {
+        if (isLoadingQueue || !queueHasMore) return;
+        isLoadingQueue = true;
+        try {
+            const data = await apiCall(`/download/queue?limit=${queueLimit}&offset=${queueOffset}`);
+            const items = data.items || [];
+            currentQueueItems = currentQueueItems.concat(items);
+            queueOffset += items.length;
+            if (data.total !== undefined) {
+                queueHasMore = queueOffset < data.total;
+            } else {
+                queueHasMore = items.length === queueLimit;
+            }
+            filterQueueItems();
+        } catch (e) {
+            queueBody.innerHTML = `<tr><td colspan="8" class="text-center text-danger py-3">⚠️ ${escapeHtml(e.message)}</td></tr>`;
+        } finally {
+            isLoadingQueue = false;
+            document.getElementById('queueLoadMore').style.display = queueHasMore ? 'block' : 'none';
+        }
+    }
+
+    async function loadQueue() {
+        queueOffset = 0;
+        currentQueueItems = [];
+        queueHasMore = true;
+        isLoadingQueue = false;
+        document.getElementById('queueLoadMore').style.display = 'none';
+        await loadQueuePage();
+    }
+
+    function filterQueueItems() {
+        const statusFilter = document.getElementById('queueStatusFilter').value;
+        const searchFilter = document.getElementById('queueSearchFilter').value.toLowerCase().trim();
+        const sortBy = document.getElementById('queueSortBy').value;
+
+        let filtered = currentQueueItems
+
+        if (statusFilter !== 'all') {
+            filtered = filtered.filter(item => (item.download_status || item.status) === statusFilter);
+        }
+
+        if (searchFilter) {
+            filtered = filtered.filter(item =>
+                (item.trackName || '').toLowerCase().includes(searchFilter) ||
+                (item.artistName || '').toLowerCase().includes(searchFilter)
+            );
+        }
+
+        filtered.sort((a, b) => {
+            switch (sortBy) {
+                case 'id': return (a.download_id || 0) - (b.download_id || 0);
+                case 'status': return (a.download_status || '').localeCompare(b.download_status || '');
+                case 'track': return (a.trackName || '').localeCompare(b.trackName || '');
+                case 'added': return new Date(a.added_at || 0) - new Date(b.added_at || 0);
+                default: return 0;
+            }
+        });
+
+        filteredQueueItems = filtered;
+        queueFilterCount.textContent = `${filtered.length}`;
+        renderQueueTable(filtered);
+        updateQueueStats();
+    }
+
+    function renderQueueTable(items) {
+        if (!items.length) {
+            queueBody.innerHTML =
+                '<tr><td colspan="8" class="text-center text-muted py-3">No items match filters (only tracks you added are shown).</td></tr>';
+            updateQueueSelection();
+            return;
+        }
+
+        let html = '';
+        for (const item of items) {
+            const trackName = item.trackName || item.trackId || 'Unknown';
+            const artist = item.artistName || '—';
+            const status = item.download_status || item.status || 'pending';
+            const statusClass =
+                `bg-${status === 'pending' ? 'warning' : status === 'downloading' ? 'info' : status === 'paused' ? 'secondary' : status === 'completed' ? 'success' : status === 'failed' ? 'danger' : 'secondary'}`;
+            const quality = item.quality || '192';
+            const mirrorHtml = renderMirrorButtons(item.mirrorUrls || {}, item);
+
+            let playBtn = '';
+            if (status === 'completed' && (item.mirrorUrls?.audioUrl || item.mirrorUrls?.previewUrl)) {
+                const audioRaw = item.mirrorUrls?.audioUrl?.url || item.mirrorUrls?.previewUrl?.url;
+                if (audioRaw) {
+                    const proxied = getProxiedAudioUrl(audioRaw);
+                    if (proxied) {
+                        playBtn =
+                            `<button class="btn btn-sm btn-success" onclick="playAudioUrl('${escapeHtml(proxied)}','${escapeHtml(trackName)}','${escapeHtml(artist)}','${escapeHtml(getArtwork600(item))}','${item.trackId}')"><i class="bi bi-play-fill"></i></button>`;
+                    }
+                }
+            }
+
+            const isUserAdded = item.trackId ? isTrackAddedByUser(cleanId(item.trackId)) : false;
+
+            html += `
+                        <tr>
+                            <td><input type="checkbox" class="queue-checkbox form-check-input" value="${item.download_id}" /></td>
+                            <td><code>${item.download_id}</code></td>
+                            <td><span class="cursor-pointer text-primary" onclick="routeToInternalLink('track','${item.trackId}')">${escapeHtml(trackName)}</span>${isUserAdded ? ' <i class="bi bi-person-check text-success" title="Added by you"></i>' : ''}</td>
+                            <td>${escapeHtml(artist)}</td>
+                            <td>${quality}</td>
+                            <td><span class="status-badge badge ${statusClass}">${status}</span></td>
+                            <td>
+                                <div class="d-flex gap-1 flex-wrap">
+                                    ${playBtn}
+                                    ${status === 'pending' ? `<button class="btn btn-sm btn-outline-primary" onclick="updateSingleStatus(${item.download_id},'downloading')"><i class="bi bi-play-fill"></i></button>` : ''}
+                                    ${status === 'downloading' ? `<button class="btn btn-sm btn-outline-warning" onclick="updateSingleStatus(${item.download_id},'paused')"><i class="bi bi-pause-fill"></i></button>` : ''}
+                                    ${status === 'paused' ? `<button class="btn btn-sm btn-outline-primary" onclick="updateSingleStatus(${item.download_id},'downloading')"><i class="bi bi-play-fill"></i></button>` : ''}
+                                    ${['failed', 'stopped'].includes(status) ? `<button class="btn btn-sm btn-outline-secondary" onclick="updateSingleStatus(${item.download_id},'pending')"><i class="bi bi-arrow-repeat"></i></button>` : ''}
+                                    ${['downloading', 'pending'].includes(status) ? `<button class="btn btn-sm btn-outline-danger" onclick="updateSingleStatus(${item.download_id},'stopped')"><i class="bi bi-stop-fill"></i></button>` : ''}
+                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteSingleDownload(${item.download_id})"><i class="bi bi-trash3"></i></button>
+                                </div>
+                            </td>
+                            <td>${mirrorHtml}</td>
+                        </tr>
+                    `;
+        }
+        queueBody.innerHTML = html;
+
+        document.querySelectorAll('.queue-checkbox').forEach(cb => cb.addEventListener('change', updateQueueSelection));
+
+        const selectAll = document.getElementById('queueSelectAllCheck');
+        if (selectAll) {
+            const checked = document.querySelectorAll('.queue-checkbox:checked');
+            const all = document.querySelectorAll('.queue-checkbox');
+            selectAll.checked = all.length > 0 && all.length === checked.length;
+            selectAll.onchange = (e) => {
+                document.querySelectorAll('.queue-checkbox').forEach(cb => cb.checked = e.target.checked);
+                updateQueueSelection();
+            };
+        }
+        updateQueueSelection();
+        const active = currentQueueItems.filter(i => ['pending', 'downloading'].includes(i.download_status || i
+            .status || '')).length;
+        queueTabBadge.textContent = active;
+    }
+
+    function updateQueueStats() {
+        const stats = { pending: 0, downloading: 0, paused: 0, completed: 0, failed: 0, stopped: 0 };
+        currentQueueItems.forEach(item => {
+            const s = item.download_status || item.status || 'pending';
+            if (stats[s] !== undefined) stats[s]++;
+        });
+        queueStatsBadge.textContent = `${currentQueueItems.length} total`;
+    }
+
+    function renderMirrorButtons(mirrorUrls, item) {
+        if (!mirrorUrls) return '—';
+        let html = '<div class="d-flex gap-1">';
+        const audioRaw = mirrorUrls.audioUrl?.url || mirrorUrls.audioUrl;
+        if (audioRaw) {
+            const proxied = getProxiedAudioUrl(audioRaw);
+            if (proxied) {
+                html +=
+                    `<a href="${escapeHtml(proxied)}" target="_blank" class="btn btn-sm btn-outline-primary" title="Download audio"><i class="bi bi-music-note"></i></a>`;
+            }
+        }
+        const artwork600 = getArtwork600(item);
+        if (artwork600) {
+            html +=
+                `<a href="${escapeHtml(artwork600)}" target="_blank" class="btn btn-sm btn-outline-secondary" title="Artwork"><i class="bi bi-image"></i></a>`;
+        }
+        if (mirrorUrls.previewUrl?.url) {
+            const preview = getProxiedAudioUrl(mirrorUrls.previewUrl.url);
+            if (preview) {
+                html +=
+                    `<a href="${escapeHtml(preview)}" target="_blank" class="btn btn-sm btn-outline-warning" title="Preview"><i class="bi bi-play-circle"></i></a>`;
+            }
+        }
+        html += '</div>';
+        return html;
+    }
+
+    function updateQueueSelection() {
+        selectedQueueIds.clear();
+        document.querySelectorAll('.queue-checkbox:checked').forEach(cb => selectedQueueIds.add(parseInt(cb.value)));
+        const count = selectedQueueIds.size;
+        queueSelectedCount.textContent = count;
+        queueBulkBar.style.display = count > 0 ? 'flex' : 'none';
+
+        const selectAll = document.getElementById('queueSelectAllCheck');
+        if (selectAll) {
+            const all = document.querySelectorAll('.queue-checkbox');
+            const checked = document.querySelectorAll('.queue-checkbox:checked');
+            selectAll.checked = all.length > 0 && all.length === checked.length;
+        }
+    }
+
+    function queueSelectAllVisible() {
+        document.querySelectorAll('.queue-checkbox').forEach(cb => cb.checked = true);
+        updateQueueSelection();
+    }
+
+    function queueSelectNone() {
+        selectedQueueIds.clear();
+        document.querySelectorAll('.queue-checkbox').forEach(cb => cb.checked = false);
+        updateQueueSelection();
+    }
+
+    async function bulkUpdate(status) {
+        if (!selectedQueueIds.size) return;
+        try {
+            const ids = Array.from(selectedQueueIds);
+            await apiCall('/download/update', 'POST', { id: ids, status });
+            showToast(`✅ ${ids.length} tasks → ${status}`);
+            loadQueue();
+        } catch (e) {
+            showToast('Update failed: ' + e.message, true);
+        }
+    }
+
+    async function bulkDelete() {
+        if (!selectedQueueIds.size) return;
+        const ok = await showConfirm('Delete Tasks', `Delete ${selectedQueueIds.size} selected tasks?`);
+        if (!ok) return;
+        try {
+            const ids = Array.from(selectedQueueIds);
+            await apiCall('/download/delete', 'DELETE', { id: ids });
+            showToast(`🗑️ ${ids.length} tasks deleted`);
+            loadQueue();
+        } catch (e) {
+            showToast('Delete failed: ' + e.message, true);
+        }
+    }
+
+    window.updateSingleStatus = async (id, status) => {
+        try {
+            await apiCall('/download/update', 'POST', { id: [id], status });
+            showToast(`Task ${id} → ${status}`);
+            loadQueue();
+        } catch (e) {
+            showToast('Update failed: ' + e.message, true);
+        }
+    };
+
+    window.deleteSingleDownload = async (id) => {
+        const ok = await showConfirm('Delete Task', `Delete task ${id}?`);
+        if (!ok) return;
+        try {
+            await apiCall('/download/delete', 'DELETE', { id: [id] });
+            showToast(`🗑️ Task ${id} deleted`);
+            loadQueue();
+        } catch (e) {
+            showToast('Delete failed: ' + e.message, true);
+        }
+    };
+
+    async function clearFailed() {
+        const failed = currentQueueItems.filter(i => ['failed', 'stopped'].includes(i.download_status || i.status ||
+            ''));
+        if (!failed.length) { showToast('No failed/stopped tasks'); return; }
+        const ok = await showConfirm('Clear Failed', `Delete ${failed.length} failed/stopped tasks?`);
+        if (!ok) return;
+        try {
+            await apiCall('/download/delete', 'DELETE', { status: 'failed' });
+            await apiCall('/download/delete', 'DELETE', { status: 'stopped' });
+            showToast(`✅ ${failed.length} tasks cleared`);
+            loadQueue();
+        } catch (e) {
+            showToast('Clear failed: ' + e.message, true);
+        }
+    }
+
+    async function retryFailed() {
+        const failed = currentQueueItems.filter(i => i.download_status === 'failed');
+        if (!failed.length) { showToast('No failed tasks'); return; }
+        try {
+            const ids = failed.map(i => i.download_id);
+            await apiCall('/download/update', 'POST', { id: ids, status: 'pending' });
+            showToast(`✅ ${ids.length} tasks retried`);
+            loadQueue();
+        } catch (e) {
+            showToast('Retry failed: ' + e.message, true);
+        }
+    }
+
+    // Clear All Completed (server-side)
+    async function clearCompletedQueue() {
+        const completed = currentQueueItems.filter(i => (i.download_status || i.status) === 'completed');
+        if (!completed.length) {
+            showToast('No completed tasks found.');
+            return;
+        }
+        const ok = await showConfirm(
+            'Clear Completed',
+            `Permanently delete all ${completed.length} completed tasks from the queue?`
+        );
+        if (!ok) return;
+        try {
+            await apiCall('/download/delete', 'DELETE', { status: 'completed' });
+            showToast(`🗑️ All completed tasks deleted`);
+            loadQueue();
+        } catch (e) {
+            showToast('Failed to clear completed: ' + e.message, true);
+        }
+    }
+
+    async function exportQueue() {
+        if (!filteredQueueItems.length) { showToast('No items to export'); return; }
+        let csv = 'ID,Track,Artist,Status,Quality,Added\n';
+        for (const item of filteredQueueItems) {
+            csv +=
+                `${item.download_id},"${item.trackName || ''}","${item.artistName || ''}",${item.download_status || item.status || ''},${item.quality || ''},${item.added_at || ''}\n`;
+        }
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `queue_${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('✅ CSV exported');
+    }
+
+    // ================================================================
+    //  STATS
+    // ================================================================
+    async function loadStats() {
+        const container = document.getElementById('statsWorkspace');
+        try {
+            const stats = await apiCall('/stats');
+            const queueStats = { pending: 0, downloading: 0, paused: 0, completed: 0, failed: 0, stopped: 0 };
+            currentQueueItems.forEach(item => {
+                const s = item.download_status || item.status || 'pending';
+                if (queueStats[s] !== undefined) queueStats[s]++;
+            });
+            const remaining = Math.max(0, RATE_LIMIT - getDownloadCountInWindow());
+
+            container.innerHTML = `
+                        <div class="row g-3">
+                            <div class="col-6 col-md-3"><div class="meta-item"><label>Total Tracks</label><div class="fs-4">${stats.track_count || 0}</div></div></div>
+                            <div class="col-6 col-md-3"><div class="meta-item"><label>Artists</label><div class="fs-4">${stats.artist_count || 0}</div></div></div>
+                            <div class="col-6 col-md-3"><div class="meta-item"><label>Albums</label><div class="fs-4">${stats.album_count || 0}</div></div></div>
+                            <div class="col-6 col-md-3"><div class="meta-item"><label>DB Size</label><div class="fs-4">${(stats.db_size_bytes / 1024 / 1024).toFixed(2)} MB</div></div></div>
+                        </div>
+                        <div class="row g-2 mt-3">
+                            <div class="col-12"><h6><i class="bi bi-list-task me-1"></i> Queue Status</h6></div>
+                            <div class="col-2"><span class="badge bg-warning">Pending <span class="stat-badge" data-status="pending">${queueStats.pending}</span></span></div>
+                            <div class="col-2"><span class="badge bg-info">Downloading <span class="stat-badge" data-status="downloading">${queueStats.downloading}</span></span></div>
+                            <div class="col-2"><span class="badge bg-secondary">Paused <span class="stat-badge" data-status="paused">${queueStats.paused}</span></span></div>
+                            <div class="col-2"><span class="badge bg-success">Completed <span class="stat-badge" data-status="completed">${queueStats.completed}</span></span></div>
+                            <div class="col-2"><span class="badge bg-danger">Failed <span class="stat-badge" data-status="failed">${queueStats.failed}</span></span></div>
+                            <div class="col-2"><span class="badge bg-secondary">Stopped <span class="stat-badge" data-status="stopped">${queueStats.stopped}</span></span></div>
+                        </div>
+                        <div class="mt-3 rate-banner">
+                            <i class="bi bi-clock-history me-1"></i> Downloads remaining this window: <span class="count">${remaining}</span> / ${RATE_LIMIT}
+                        </div>
+                    `;
+        } catch (e) {
+            container.innerHTML = `<div class="text-danger">Error loading stats: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    // ================================================================
+    //  SEARCH (now in sidebar)
+    // ================================================================
+    async function performSearch() {
+        const term = sidebarSearchInput.value.trim();
+        if (!term) return;
+        treeContainer.innerHTML =
+            `<div class="tree-loading text-center py-3"><i class="bi bi-arrow-clockwise me-1"></i> Searching…</div>`;
+        try {
+            const results = await searchItunes(term, 'all');
+            if (!results.length) {
+                treeContainer.innerHTML =
+                    `<div class="tree-empty">No results for "${escapeHtml(term)}"</div>`;
+                return;
+            }
+            let topLevel = [...results.filter(r => r.wrapperType === 'artist'), ...results.filter(r => r
+                .wrapperType === 'collection'), ...results.filter(r => r.wrapperType === 'track')];
+            renderTree(topLevel);
+        } catch (e) {
+            treeContainer.innerHTML = `<div class="tree-empty text-danger">❌ ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    // ================================================================
+    //  THEME TOGGLE
+    // ================================================================
+    let darkMode = true;
+    const themeToggle = $('#themeToggle');
+    const themeIcon = $('#themeIcon');
+
+    function toggleTheme() {
+        darkMode = !darkMode;
+        document.documentElement.setAttribute('data-bs-theme', darkMode ? 'dark' : 'light');
+        themeIcon.className = darkMode ? 'bi bi-moon-stars' : 'bi bi-sun';
+    }
+    themeToggle.addEventListener('click', toggleTheme);
+
+    // ================================================================
+    //  EVENT BINDINGS
+    // ================================================================
+    sidebarSearchBtn.addEventListener('click', performSearch);
+    sidebarSearchInput.addEventListener('keypress', e => { if (e.key === 'Enter') performSearch(); });
+
+    document.getElementById('sidebarToggle').addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+        rightPanel.classList.remove('open');
+    });
+
+    document.getElementById('rightPanelToggle').addEventListener('click', () => {
+        rightPanel.classList.toggle('open');
+        sidebar.classList.remove('open');
+    });
+
+    document.getElementById('treeBulkAdd').addEventListener('click', addSelectedToQueue);
+    document.getElementById('treeSelectAll').addEventListener('click', treeSelectAll);
+    document.getElementById('treeSelectNone').addEventListener('click', treeSelectNone);
+    document.getElementById('treeExpandAll').addEventListener('click', treeExpandAll);
+    document.getElementById('treeCollapseAll').addEventListener('click', treeCollapseAll);
+
+    document.getElementById('refreshQueue').addEventListener('click', loadQueue);
+    document.getElementById('clearFailed').addEventListener('click', clearFailed);
+    document.getElementById('retryFailed').addEventListener('click', retryFailed);
+    document.getElementById('clearCompleted').addEventListener('click', clearCompletedQueue);
+    document.getElementById('exportQueue').addEventListener('click', exportQueue);
+    document.getElementById('queueBulkStart').addEventListener('click', () => bulkUpdate('downloading'));
+    document.getElementById('queueBulkPause').addEventListener('click', () => bulkUpdate('paused'));
+    document.getElementById('queueBulkResume').addEventListener('click', () => bulkUpdate('downloading'));
+    document.getElementById('queueBulkStop').addEventListener('click', () => bulkUpdate('stopped'));
+    document.getElementById('queueBulkRetry').addEventListener('click', () => bulkUpdate('pending'));
+    document.getElementById('queueBulkDelete').addEventListener('click', bulkDelete);
+    document.getElementById('queueSelectAll').addEventListener('click', queueSelectAllVisible);
+    document.getElementById('queueSelectNone').addEventListener('click', queueSelectNone);
+
+    document.getElementById('queueStatusFilter').addEventListener('change', filterQueueItems);
+    document.getElementById('queueSearchFilter').addEventListener('input', filterQueueItems);
+    document.getElementById('queueSortBy').addEventListener('change', filterQueueItems);
+    document.getElementById('clearQueueFilters').addEventListener('click', () => {
+        document.getElementById('queueStatusFilter').value = 'all';
+        document.getElementById('queueSearchFilter').value = '';
+        document.getElementById('queueSortBy').value = 'id';
+        filterQueueItems();
+    });
+
+    document.querySelectorAll('[data-bs-toggle="tab"]').forEach(btn => {
+        btn.addEventListener('shown.bs.tab', (e) => {
+            const target = e.target.getAttribute('data-bs-target');
+            if (target === '#pane-queue') loadQueue();
+            if (target === '#pane-stats') loadStats();
+            if (target === '#pane-downloads') renderDownloadTasks();
+        });
+    });
+
+    // Infinite scroll on queue table wrapper
+    const queueTableWrap = document.querySelector('.queue-table-wrap');
+    if (queueTableWrap) {
+        queueTableWrap.addEventListener('scroll', function() {
+            if (this.scrollTop + this.clientHeight >= this.scrollHeight - 50) {
+                loadQueuePage();
+            }
+        });
+    }
+
+    // ================================================================
+    //  INIT
+    // ================================================================
+    window.addEventListener('load', () => {
+        initAudioPlayer();
+        loadQueue();
+        renderDownloadTasks();
+        updateRateBadge();
+
+        // synced lyrics update every 500ms when playing
+        setInterval(() => {
+            if (audio && audio.src && isPlaying) {
+                updateSyncedLyrics();
+            }
+        }, 500);
+    });
+</script>
+</body>
+</html>
