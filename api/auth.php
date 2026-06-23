@@ -4,7 +4,8 @@ require_once __DIR__ . '/config.php';
 
 function handleAuth($path) {
     $method = $_SERVER['REQUEST_METHOD'];
-    $data = json_decode(file_get_contents('php://input'), true);
+    $json = file_get_contents('php://input');
+    $data = json_decode($json, true) ?: [];
 
     if ($path === '/auth/signup') {
         if ($method !== 'POST') respond(['success' => false, 'error' => 'Method not allowed'], 405);
@@ -34,7 +35,7 @@ function signup($data) {
         $userId = $db->lastInsertId();
 
         // Auto-create a default application token for the user
-        $token = bin2hex(random_bytes(20));
+        $token = bin2hex(function_exists('random_bytes') ? random_bytes(20) : openssl_random_pseudo_bytes(20));
         $stmtApp = $db->prepare("INSERT INTO applications (name, api_token, user_id, type) VALUES ('Default Client', ?, ?, 'client')");
         $stmtApp->execute([$token, $userId]);
 
@@ -65,7 +66,7 @@ function login($data) {
     $token = $app ? $app['api_token'] : null;
 
     if (!$token) {
-        $token = bin2hex(random_bytes(20));
+        $token = bin2hex(function_exists('random_bytes') ? random_bytes(20) : openssl_random_pseudo_bytes(20));
         $stmtApp = $db->prepare("INSERT INTO applications (name, api_token, user_id, type) VALUES ('Client', ?, ?, 'client')");
         $stmtApp->execute([$token, $user['id']]);
     }
@@ -83,7 +84,7 @@ function handleAppCreate($auth) {
     $data = json_decode(file_get_contents('php://input'), true);
     if (empty($data['name'])) respond(['success' => false, 'error' => 'Application name required'], 400);
 
-    $token = bin2hex(random_bytes(20));
+    $token = bin2hex(function_exists('random_bytes') ? random_bytes(20) : openssl_random_pseudo_bytes(20));
     $type = $data['type'] ?? 'application';
 
     $db = getDB();
