@@ -1,49 +1,27 @@
 <?php
-
 /**
- * iTunes API Proxy v2.0 – Advanced Caching, Mirror Management, Lyrics, Extended Endpoints
- * + Download Manager v1.0 – Queue tracks by ID, album, artist; manage download states.
- * 
- * Features:
- * - All iTunes items stored with 'it_' prefix (e.g., it_123456789)
- * - Query by prefixed or unprefixed ID
- * - Preserves lyrics, mirrors, and custom fields when syncing from iTunes
- * - Adaptive TTL caching, offline fallback, request throttling
- * - Proxy rotation, user-agent rotation, IP spoofing, smart rate limiting
- * - Multi-quality audio mirror support (320, 192, 128 kbps)
- * - Mirror URLs only show custom mirrors (null if not set)
- * - artworkUrl for tracks inherits collection's artwork mirror if set (otherwise null)
- * - /mirror/get returns same structure as main endpoints
- * - Dynamic column addition (no more "no column named kind" errors)
- * - Removed /track, /album, /artist endpoints (use /lookup instead)
- * - Extended endpoints: /batch, /popular, /cache/clear, /stats, /health, /db/stats, /proxy/status, /rate-limit/reset
- * - Full compatibility with /search, /lookup, /mirror/*, /lyrics/*
- * - Caching only from successful live API responses (no caching of errors or fallback data)
- * - Search results do NOT include mirrorUrls
- * - Lookup results include lyrics for tracks (same format as /lyrics/get)
- * 
- * Download Manager (BATCH CAPABLE with 'id' supporting multiple):
- * - /download/add – Add tracks by trackId, albumId, or artistId (all child tracks)
- * - /download/queue – Get the full download queue (supports filters: status, limit, offset)
- * - /download/status – Get status of a specific download (by id or trackId)
- * - /download/update – Batch update download status, file path, error messages (supports id (multi), ids, trackIds, filterStatus)
- * - /download/delete – Batch delete download entries (supports id (multi), ids, trackIds, status, all)
- * - Download states: pending, downloading, paused, completed, failed, stopped
- * - Tracks are automatically resolved from local DB or iTunes API when adding albums/artists
- * - Prevent duplicate tracks in queue (skip existing non-terminal entries)
- * - Download queue items return full track data (mirrors, lyrics) like search/lookup
+ * iTunes API Proxy v2.0 – MySQL Edition
+ * + Download Manager v1.0
+ * All features preserved, now powered by MySQL (PDO).
  */
 
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 
-// ── Configuration ──────────────────────────────────────────
-define('DB_PATH', __DIR__ . '/itunes.db');
-define('CACHE_DURATION', 21600);               // 6 hours
+// ── MySQL Configuration ────────────────────────────────────
+define('DEST_HOST', 'localhost');
+define('DEST_NAME', 'rahir111_abraava');
+define('DEST_USER', 'rahir111_admin');
+define('DEST_PASS', 's.hH3KolwG=J!qRY');
+define('DEST_PORT', 3306);
+define('CHUNK_SIZE', 100);
+
+// ── General Configuration ─────────────────────────────────
+define('CACHE_DURATION', 21600);
 define('ITUNES_SEARCH_API', 'https://itunes.apple.com/search');
 define('ITUNES_LOOKUP_API', 'https://itunes.apple.com/lookup');
-define('BATCH_SIZE', 100);
+define('BATCH_SIZE', 500);
 define('ENABLE_GZIP', true);
 define('RATE_LIMIT_MAX_RETRIES', 5);
 define('RATE_LIMIT_BASE_DELAY', 0.5);
@@ -61,7 +39,6 @@ define('SMART_CACHE_PRELOAD', true);
 define('SUPPORTED_AUDIO_QUALITIES', ['320', '192', '128']);
 define('DEFAULT_AUDIO_QUALITY', '192');
 
-// Download manager configuration
 define('DOWNLOAD_STATUS_PENDING', 'pending');
 define('DOWNLOAD_STATUS_DOWNLOADING', 'downloading');
 define('DOWNLOAD_STATUS_PAUSED', 'paused');
@@ -69,15 +46,6 @@ define('DOWNLOAD_STATUS_COMPLETED', 'completed');
 define('DOWNLOAD_STATUS_FAILED', 'failed');
 define('DOWNLOAD_STATUS_STOPPED', 'stopped');
 
-// SQLite3 constants fallback
-if (!defined('SQLITE3_ASSOC')) define('SQLITE3_ASSOC', 1);
-if (!defined('SQLITE3_NUM')) define('SQLITE3_NUM', 2);
-if (!defined('SQLITE3_BOTH')) define('SQLITE3_BOTH', 3);
-if (!defined('SQLITE3_INTEGER')) define('SQLITE3_INTEGER', 1);
-if (!defined('SQLITE3_FLOAT')) define('SQLITE3_FLOAT', 2);
-if (!defined('SQLITE3_TEXT')) define('SQLITE3_TEXT', 3);
-
-// Global state
 $db = null;
 $statements = [];
 $lastRequestTime = 0;
@@ -111,159 +79,162 @@ function denormalizeIdsInArray(array &$data): void {
     }
 }
 
-// ── Database & Statements ─────────────────────────────────
-function getDB(): SQLite3 {
+// ── Database & Statements (PDO) ───────────────────────────
+function getDB(): PDO {
     global $db;
     if ($db === null) {
-        $db = new SQLite3(DB_PATH);
-        $db->enableExceptions(true);
-        $db->busyTimeout(5000);
-        $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA synchronous=NORMAL');
-        $db->exec('PRAGMA cache_size=-65536');
-        $db->exec('PRAGMA temp_store=MEMORY');
-        $db->exec('PRAGMA foreign_keys=OFF');
+        $dsn = sprintf(
+            'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+            DEST_HOST,
+            DEST_PORT,
+            DEST_NAME
+        );
+        $db = new PDO($dsn, DEST_USER, DEST_PASS, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]);
         initDatabase($db);
     }
     return $db;
 }
-function getStatement(string $sql): SQLite3Stmt {
+
+function getStatement(string $sql): PDOStatement {
     global $statements;
     $hash = md5($sql);
-    if (!isset($statements[$hash])) $statements[$hash] = getDB()->prepare($sql);
+    if (!isset($statements[$hash])) {
+        $statements[$hash] = getDB()->prepare($sql);
+    }
     return $statements[$hash];
 }
 
-// ── Schema & Migrations (including download queue tables) ──
-function initDatabase(SQLite3 $db): void {
+// ── Schema & Initialization (MySQL) ──────────────────────
+function initDatabase(PDO $db): void {
     static $initialized = false;
     if ($initialized) return;
-    $db->exec("CREATE TABLE IF NOT EXISTS artists (artistId TEXT PRIMARY KEY)");
-    $db->exec("CREATE TABLE IF NOT EXISTS collections (collectionId TEXT PRIMARY KEY)");
-    $db->exec("CREATE TABLE IF NOT EXISTS tracks (trackId TEXT PRIMARY KEY)");
+
+    $db->exec("CREATE TABLE IF NOT EXISTS artists (
+        artistId VARCHAR(255) PRIMARY KEY
+    ) ENGINE=InnoDB");
+
+    $db->exec("CREATE TABLE IF NOT EXISTS collections (
+        collectionId VARCHAR(255) PRIMARY KEY
+    ) ENGINE=InnoDB");
+
+    $db->exec("CREATE TABLE IF NOT EXISTS tracks (
+        trackId VARCHAR(255) PRIMARY KEY,
+        lyrics TEXT
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS entityMirrors (
-        entityType TEXT NOT NULL, entityId TEXT NOT NULL, urlType TEXT NOT NULL,
-        mirrorUrl TEXT NOT NULL, quality TEXT, platform TEXT NOT NULL DEFAULT 'bale',
-        updatedAt TEXT, PRIMARY KEY (entityType, entityId, urlType, quality, platform)
-    )");
+        entityType VARCHAR(50) NOT NULL,
+        entityId VARCHAR(255) NOT NULL,
+        urlType VARCHAR(50) NOT NULL,
+        mirrorUrl TEXT NOT NULL,
+        quality VARCHAR(10),
+        platform VARCHAR(50) NOT NULL DEFAULT 'telegram',
+        updatedAt DATETIME,
+        PRIMARY KEY (entityType, entityId, urlType, quality, platform)
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS requestCache (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, params TEXT NOT NULL,
-        resultIds TEXT NOT NULL, expiresAt DATETIME NOT NULL, lastAccessed DATETIME,
-        accessCount INTEGER DEFAULT 0, UNIQUE(endpoint, params)
-    )");
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        endpoint VARCHAR(255) NOT NULL,
+        params VARCHAR(2048) NOT NULL,
+        resultIds TEXT NOT NULL,
+        expiresAt DATETIME NOT NULL,
+        lastAccessed DATETIME,
+        accessCount INT DEFAULT 0,
+        UNIQUE KEY (endpoint, params)
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS rateLimitLog (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, apiName TEXT NOT NULL,
-        lastRequestTime DATETIME NOT NULL, requestCount INTEGER DEFAULT 1,
-        successfulRequests INTEGER DEFAULT 0, failedRequests INTEGER DEFAULT 0,
-        blockedUntil DATETIME, UNIQUE(apiName)
-    )");
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        apiName VARCHAR(100) NOT NULL,
+        lastRequestTime DATETIME NOT NULL,
+        requestCount INT DEFAULT 1,
+        successfulRequests INT DEFAULT 0,
+        failedRequests INT DEFAULT 0,
+        blockedUntil DATETIME,
+        UNIQUE KEY (apiName)
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS requestHistory (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, requestTime DATETIME NOT NULL,
-        endpoint TEXT NOT NULL, statusCode INTEGER, responseTime INTEGER,
-        userAgent TEXT, success INTEGER DEFAULT 0
-    )");
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        requestTime DATETIME NOT NULL,
+        endpoint TEXT NOT NULL,
+        statusCode INT,
+        responseTime INT,
+        userAgent TEXT,
+        success INT DEFAULT 0
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS proxyStatus (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, proxyUrl TEXT NOT NULL UNIQUE,
-        lastUsed DATETIME, successCount INTEGER DEFAULT 0, failCount INTEGER DEFAULT 0,
-        isBlocked INTEGER DEFAULT 0, blockedUntil DATETIME, responseTimeAvg REAL DEFAULT 0
-    )");
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        proxyUrl VARCHAR(255) NOT NULL UNIQUE,
+        lastUsed DATETIME,
+        successCount INT DEFAULT 0,
+        failCount INT DEFAULT 0,
+        isBlocked INT DEFAULT 0,
+        blockedUntil DATETIME,
+        responseTimeAvg DECIMAL(10,2) DEFAULT 0
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS offlineCache (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, entityType TEXT NOT NULL,
-        entityId TEXT NOT NULL, data TEXT NOT NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        expiresAt DATETIME, UNIQUE(entityType, entityId)
-    )");
-    // Download manager tables
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        entityType VARCHAR(50) NOT NULL,
+        entityId VARCHAR(255) NOT NULL,
+        data TEXT NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        expiresAt DATETIME,
+        UNIQUE KEY (entityType, entityId)
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE TABLE IF NOT EXISTS download_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        trackId TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        trackId VARCHAR(255) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
         filePath TEXT,
-        quality TEXT,
-        platform TEXT DEFAULT 'bale',
+        quality VARCHAR(10),
+        platform VARCHAR(50) DEFAULT 'telegram',
         addedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         startedAt DATETIME,
         completedAt DATETIME,
         errorMessage TEXT,
-        retryCount INTEGER DEFAULT 0,
-        priority INTEGER DEFAULT 0,
+        retryCount INT DEFAULT 0,
+        priority INT DEFAULT 0,
         FOREIGN KEY (trackId) REFERENCES tracks(trackId) ON DELETE CASCADE
-    )");
+    ) ENGINE=InnoDB");
+
     $db->exec("CREATE INDEX IF NOT EXISTS idx_download_status ON download_queue(status)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_download_track ON download_queue(trackId)");
-    
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_mirrors_lookup ON entityMirrors(entityType, entityId)');
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_cache_lookup ON requestCache(endpoint, params)');
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_offline_entity ON offlineCache(entityType, entityId)');
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_request_history ON requestHistory(requestTime)');
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_mirrors_lookup ON entityMirrors(entityType, entityId)");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_cache_lookup ON requestCache(endpoint, params(255))");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_offline_entity ON offlineCache(entityType, entityId)");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_request_history ON requestHistory(requestTime)");
 
-    // Migrations
-    migrateToTextPK($db);
-    migrateMirrorQuality($db);
-    migrateMirrorPlatform($db);
-    addMissingColumns($db);
     $initialized = true;
 }
-function migrateToTextPK(SQLite3 $db): void {
-    $tables = ['artists' => 'artistId', 'collections' => 'collectionId', 'tracks' => 'trackId'];
-    foreach ($tables as $table => $idCol) {
-        $res = $db->query("PRAGMA table_info($table)");
-        $type = '';
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) if ($row['name'] === $idCol) $type = strtoupper($row['type']);
-        if ($type === 'INTEGER') {
-            $db->exec("BEGIN TRANSACTION");
-            try {
-                $cols = [];
-                $res2 = $db->query("PRAGMA table_info($table)");
-                while ($row = $res2->fetchArray(SQLITE3_ASSOC)) if ($row['name'] !== $idCol) $cols[] = $row['name'];
-                $db->exec("CREATE TABLE {$table}_new ($idCol TEXT PRIMARY KEY)");
-                foreach ($cols as $col) $db->exec("ALTER TABLE {$table}_new ADD COLUMN `$col` TEXT");
-                $colList = implode(',', array_merge([$idCol], $cols));
-                $selectCols = implode(',', $cols);
-                $db->exec("INSERT INTO {$table}_new ($colList) SELECT 'it_' || $idCol" . ($selectCols ? ", $selectCols" : '') . " FROM $table");
-                $db->exec("DROP TABLE $table");
-                $db->exec("ALTER TABLE {$table}_new RENAME TO $table");
-                $db->exec("COMMIT");
-            } catch (Exception $e) { $db->exec("ROLLBACK"); error_log("Migration failed for $table: " . $e->getMessage()); }
-        }
-    }
-}
-function migrateMirrorQuality(SQLite3 $db): void {
-    $stmt = $db->prepare("UPDATE entityMirrors SET quality = :qual WHERE urlType = 'audioUrl' AND quality IS NULL");
-    $stmt->bindValue(':qual', DEFAULT_AUDIO_QUALITY);
-    $stmt->execute();
-}
-function migrateMirrorPlatform(SQLite3 $db): void {
-    $res = $db->query("PRAGMA table_info(entityMirrors)");
-    $hasPlatform = false;
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) if ($row['name'] === 'platform') $hasPlatform = true;
-    if (!$hasPlatform) $db->exec("ALTER TABLE entityMirrors ADD COLUMN platform TEXT NOT NULL DEFAULT 'bale'");
-}
-function addMissingColumns(SQLite3 $db): void {
-    $res = $db->query("PRAGMA table_info(tracks)");
-    $hasLyrics = false;
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) if ($row['name'] === 'lyrics') $hasLyrics = true;
-    if (!$hasLyrics) $db->exec("ALTER TABLE tracks ADD COLUMN lyrics TEXT");
-}
 
-// ── Dynamic Column Addition (fix for "no column named kind") ──
-function ensureColumns(SQLite3 $db, string $table, array $data): void {
+// ── Dynamic Column Addition (MySQL) ───────────────────────
+function ensureColumns(PDO $db, string $table, array $data): void {
     static $existingColumns = [];
     $allowedTables = ['artists', 'collections', 'tracks'];
     if (!in_array($table, $allowedTables)) return;
-    
+
     if (!isset($existingColumns[$table])) {
-        $res = $db->query("PRAGMA table_info($table)");
+        $stmt = $db->query("SHOW COLUMNS FROM $table");
         $cols = [];
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $cols[$row['name']] = true;
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $cols[$row['Field']] = true;
         }
         $existingColumns[$table] = $cols;
     }
-    
+
     foreach ($data as $col => $value) {
         if (!isset($existingColumns[$table][$col])) {
             if (preg_match('/^[a-zA-Z0-9_]+$/', $col)) {
-                $db->exec("ALTER TABLE $table ADD COLUMN `$col` TEXT");
+                $db->exec("ALTER TABLE $table ADD COLUMN `$col` TEXT DEFAULT NULL");
                 $existingColumns[$table][$col] = true;
                 error_log("Added column `$col` to table $table");
             }
@@ -271,31 +242,25 @@ function ensureColumns(SQLite3 $db, string $table, array $data): void {
     }
 }
 
-// ── Data Preservation when Saving from iTunes (with column addition) ──
-function saveEntitiesFromApi(SQLite3 $db, string $table, array $entities): void {
+// ── Data Preservation when Saving from iTunes ─────────────
+function saveEntitiesFromApi(PDO $db, string $table, array $entities): void {
     if (empty($entities)) return;
     if (isset($entities['wrapperType']) || isset($entities['artistId']) || isset($entities['collectionId']) || isset($entities['trackId'])) {
         $entities = [$entities];
     }
 
-    // Map table name to expected wrapperType
     $expectedWrapper = match ($table) {
         'artists'     => 'artist',
         'collections' => 'collection',
         'tracks'      => 'track',
         default       => null,
     };
-    if ($expectedWrapper === null) {
-        return; // unknown table, skip
-    }
+    if ($expectedWrapper === null) return;
 
-    $db->exec('BEGIN TRANSACTION');
+    $db->beginTransaction();
     foreach ($entities as $entity) {
         if (!is_array($entity)) continue;
-        // Skip if wrapperType doesn't match the expected one for this table
-        if (isset($entity['wrapperType']) && $entity['wrapperType'] !== $expectedWrapper) {
-            continue;
-        }
+        if (isset($entity['wrapperType']) && $entity['wrapperType'] !== $expectedWrapper) continue;
 
         normalizeIdsInArray($entity);
         $pkCol = match ($table) {
@@ -306,20 +271,20 @@ function saveEntitiesFromApi(SQLite3 $db, string $table, array $entities): void 
         };
         if (!$pkCol || !isset($entity[$pkCol])) continue;
 
-        // Dynamically add any missing columns
         ensureColumns($db, $table, $entity);
 
-        $stmt = $db->prepare("SELECT 1 FROM $table WHERE $pkCol = :id");
+        $stmt = getStatement("SELECT 1 FROM $table WHERE $pkCol = :id");
         $stmt->bindValue(':id', $entity[$pkCol]);
-        $exists = $stmt->execute()->fetchArray() !== false;
+        $stmt->execute();
+        $exists = $stmt->fetch() !== false;
 
         if (!$exists) {
             $columns = array_keys($entity);
-            $placeholders = array_map(fn($c) => ":$c", $columns);
-            $sql = "INSERT INTO $table (`" . implode('`,`', $columns) . "`) VALUES (" . implode(',', $placeholders) . ")";
+            $placeholders = implode(',', array_map(fn($c) => ":$c", $columns));
+            $sql = "INSERT INTO $table (`" . implode('`,`', $columns) . "`) VALUES ($placeholders)";
             $ins = $db->prepare($sql);
             foreach ($entity as $col => $val) {
-                $type = is_int($val) ? SQLITE3_INTEGER : (is_float($val) ? SQLITE3_FLOAT : SQLITE3_TEXT);
+                $type = is_int($val) ? PDO::PARAM_INT : (is_float($val) ? PDO::PARAM_STR : PDO::PARAM_STR);
                 $ins->bindValue(":$col", $val, $type);
             }
             $ins->execute();
@@ -335,7 +300,7 @@ function saveEntitiesFromApi(SQLite3 $db, string $table, array $entities): void 
                 $upd = $db->prepare($sql);
                 foreach ($entity as $col => $val) {
                     if ($col !== $pkCol && $col !== 'lyrics') {
-                        $type = is_int($val) ? SQLITE3_INTEGER : (is_float($val) ? SQLITE3_FLOAT : SQLITE3_TEXT);
+                        $type = is_int($val) ? PDO::PARAM_INT : (is_float($val) ? PDO::PARAM_STR : PDO::PARAM_STR);
                         $upd->bindValue(":$col", $val, $type);
                     }
                 }
@@ -344,10 +309,10 @@ function saveEntitiesFromApi(SQLite3 $db, string $table, array $entities): void 
             }
         }
     }
-    $db->exec('COMMIT');
+    $db->commit();
 }
 
-// ── Mirror Helpers (quality aware) ───────────────────────
+// ── Mirror Helpers (quality aware + platform grouping) ───
 function getAudioUrlTypeWithQuality(string $urlType, ?string $quality = null): string {
     if ($urlType !== 'audioUrl' || !$quality) return $urlType;
     if (!in_array($quality, SUPPORTED_AUDIO_QUALITIES)) $quality = DEFAULT_AUDIO_QUALITY;
@@ -361,7 +326,6 @@ function extractQualityFromUrlType(string $urlType): ?string {
     return null;
 }
 function getBestAvailableQuality(array $mirrors): ?array {
-    // Only consider custom mirrors
     foreach (SUPPORTED_AUDIO_QUALITIES as $qual) {
         $key = 'audioUrl_' . $qual;
         if (isset($mirrors[$key]['url'])) return ['url' => $mirrors[$key]['url'], 'quality' => $qual];
@@ -369,16 +333,58 @@ function getBestAvailableQuality(array $mirrors): ?array {
     if (isset($mirrors['audioUrl']['url'])) return ['url' => $mirrors['audioUrl']['url'], 'quality' => $mirrors['audioUrl']['quality'] ?? DEFAULT_AUDIO_QUALITY];
     return null;
 }
-function attachMirrors(array &$entity, string $type, string $id, ?string $requestedQuality = null, string $platform = 'bale'): void {
+
+/**
+ * Attach mirrors to an entity. If platform is 'all', attaches all platforms under 'allMirrors'.
+ * Otherwise, attaches only the specified platform under 'mirrorUrls'.
+ */
+function attachMirrors(array &$entity, string $type, string $id, ?string $requestedQuality = null, string $platform = 'telegram'): void {
     $db = getDB();
     $id = normalizeId($id);
+
+    if ($platform === 'all') {
+        // Fetch all platforms and group by platform
+        $stmt = getStatement("SELECT urlType, mirrorUrl, quality, platform FROM entityMirrors WHERE entityType=:t AND entityId=:id");
+        $stmt->bindValue(':t', $type);
+        $stmt->bindValue(':id', $id);
+        $stmt->execute();
+        $allMirrors = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $p = $row['platform'];
+            if (!isset($allMirrors[$p])) $allMirrors[$p] = [];
+            $urlType = $row['urlType'];
+            $mirrorData = ['url' => $row['mirrorUrl']];
+            if ($row['quality']) $mirrorData['quality'] = $row['quality'];
+            $allMirrors[$p][$urlType] = $mirrorData;
+        }
+        // Also add best audio for each platform?
+        $entity['allMirrors'] = $allMirrors;
+        // Keep mirrorUrls for backward compatibility (using first platform or default 'telegram')
+        $defaultPlatform = 'telegram';
+        if (isset($allMirrors[$defaultPlatform])) {
+            $mirrors = $allMirrors[$defaultPlatform];
+        } else if (!empty($allMirrors)) {
+            $mirrors = reset($allMirrors);
+        } else {
+            $mirrors = [];
+        }
+        // Build mirrorUrls from default platform (for backward compat)
+        $entity['mirrorUrls'] = [];
+        if (isset($mirrors['artworkUrl'])) $entity['mirrorUrls']['artworkUrl'] = ['url' => $mirrors['artworkUrl']['url']];
+        if (isset($mirrors['previewUrl'])) $entity['mirrorUrls']['previewUrl'] = ['url' => $mirrors['previewUrl']['url']];
+        $best = getBestAvailableQuality($mirrors);
+        if ($best) $entity['mirrorUrls']['audioUrl'] = $best;
+        return;
+    }
+
+    // Single platform (original behavior)
     $stmt = getStatement("SELECT urlType, mirrorUrl, quality FROM entityMirrors WHERE entityType=:t AND entityId=:id AND platform=:p");
     $stmt->bindValue(':t', $type);
     $stmt->bindValue(':id', $id);
     $stmt->bindValue(':p', $platform);
-    $res = $stmt->execute();
+    $stmt->execute();
     $mirrors = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $urlType = $row['urlType'];
         $mirrorData = ['url' => $row['mirrorUrl']];
         $qual = extractQualityFromUrlType($urlType);
@@ -387,14 +393,14 @@ function attachMirrors(array &$entity, string $type, string $id, ?string $reques
         $mirrors[$urlType] = $mirrorData;
     }
 
-    // --- artworkUrl: only from custom mirror (collection mirror for tracks) ---
     $artworkMirror = null;
     if ($type === 'track' && !empty($entity['collectionId'])) {
         $collectionId = normalizeId($entity['collectionId']);
         $stmtColl = getStatement("SELECT mirrorUrl FROM entityMirrors WHERE entityType='collection' AND entityId=:cid AND urlType='artworkUrl' AND platform=:p LIMIT 1");
         $stmtColl->bindValue(':cid', $collectionId);
         $stmtColl->bindValue(':p', $platform);
-        $collRow = $stmtColl->execute()->fetchArray(SQLITE3_ASSOC);
+        $stmtColl->execute();
+        $collRow = $stmtColl->fetch(PDO::FETCH_ASSOC);
         if ($collRow && !empty($collRow['mirrorUrl'])) {
             $artworkMirror = $collRow['mirrorUrl'];
         }
@@ -404,11 +410,9 @@ function attachMirrors(array &$entity, string $type, string $id, ?string $reques
     }
     $mirrorUrls['artworkUrl'] = $artworkMirror ? ['url' => $artworkMirror] : null;
 
-    // --- previewUrl: only from custom mirror ---
     $previewMirror = isset($mirrors['previewUrl']) ? $mirrors['previewUrl']['url'] : null;
     $mirrorUrls['previewUrl'] = $previewMirror ? ['url' => $previewMirror] : null;
 
-    // --- audioUrl: only from custom mirror (best quality or requested) ---
     if ($requestedQuality && in_array($requestedQuality, SUPPORTED_AUDIO_QUALITIES)) {
         $specific = $mirrors['audioUrl_' . $requestedQuality] ?? null;
         $mirrorUrls['audioUrl'] = $specific ?? getBestAvailableQuality($mirrors);
@@ -418,12 +422,12 @@ function attachMirrors(array &$entity, string $type, string $id, ?string $reques
 
     $entity['mirrorUrls'] = $mirrorUrls ?: new stdClass();
 }
-function setMirrorUrl(SQLite3 $db, string $type, string $id, string $urlType, string $mirrorUrl, ?string $quality = null, string $platform = 'bale'): array {
+
+function setMirrorUrl(PDO $db, string $type, string $id, string $urlType, string $mirrorUrl, ?string $quality = null, string $platform = 'telegram'): array {
     if (!in_array($urlType, ['artworkUrl','previewUrl','audioUrl'])) return ['success'=>false, 'error'=>'Invalid urlType'];
     if (!filter_var($mirrorUrl, FILTER_VALIDATE_URL) && strpos($mirrorUrl, 'tg://') !== 0) return ['success'=>false, 'error'=>'Invalid URL'];
     $id = normalizeId($id);
 
-    // Ensure skeleton record exists
     $table = match ($type) {
         'artist' => 'artists',
         'collection' => 'collections',
@@ -432,12 +436,12 @@ function setMirrorUrl(SQLite3 $db, string $type, string $id, string $urlType, st
     };
     if ($table) {
         $pk = $type . 'Id';
-        $db->exec("INSERT OR IGNORE INTO $table ($pk) VALUES ('" . $db->escapeString($id) . "')");
+        $db->exec("INSERT IGNORE INTO $table ($pk) VALUES ('" . addslashes($id) . "')");
     }
 
     $actualUrlType = getAudioUrlTypeWithQuality($urlType, $quality);
     $qualityVal = ($urlType === 'audioUrl') ? $quality : null;
-    $stmt = getStatement("INSERT OR REPLACE INTO entityMirrors (entityType, entityId, urlType, mirrorUrl, quality, platform, updatedAt) VALUES (:t,:id,:ut,:url,:q,:p, datetime('now'))");
+    $stmt = getStatement("REPLACE INTO entityMirrors (entityType, entityId, urlType, mirrorUrl, quality, platform, updatedAt) VALUES (:t,:id,:ut,:url,:q,:p, NOW())");
     $stmt->bindValue(':t', $type);
     $stmt->bindValue(':id', $id);
     $stmt->bindValue(':ut', $actualUrlType);
@@ -447,49 +451,70 @@ function setMirrorUrl(SQLite3 $db, string $type, string $id, string $urlType, st
     $stmt->execute();
     return ['success'=>true, 'message'=>"Mirror $urlType set" . ($quality ? " for quality $quality" : "") . " on $platform"];
 }
-function getMirrorUrls(SQLite3 $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, string $platform = 'bale'): array {
+
+/**
+ * Get mirror URLs. If $platform is 'all', returns all platforms grouped.
+ * Otherwise returns only the specified platform.
+ */
+function getMirrorUrls(PDO $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, string $platform = 'telegram'): array {
     $id = normalizeId($id);
-    
-    // Fetch all custom mirrors for this entity
-    $sql = "SELECT urlType, mirrorUrl, quality FROM entityMirrors 
-            WHERE entityType = :t AND entityId = :id AND platform = :p";
+    $sql = "SELECT urlType, mirrorUrl, quality, platform FROM entityMirrors 
+            WHERE entityType = :t AND entityId = :id";
+    $params = [':t' => $type, ':id' => $id];
+    if ($platform !== 'all') {
+        $sql .= " AND platform = :p";
+        $params[':p'] = $platform;
+    }
     $stmt = getStatement($sql);
-    $stmt->bindValue(':t', $type);
-    $stmt->bindValue(':id', $id);
-    $stmt->bindValue(':p', $platform);
-    $res = $stmt->execute();
-    
+    foreach ($params as $k => $v) {
+        $stmt->bindValue($k, $v);
+    }
+    $stmt->execute();
     $mirrors = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+    $allPlatforms = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $p = $row['platform'];
+        if (!isset($allPlatforms[$p])) $allPlatforms[$p] = [];
         $rowType = $row['urlType'];
         if ($urlType && $quality && $rowType !== getAudioUrlTypeWithQuality($urlType, $quality)) {
             continue;
         }
-        $mirrors[$rowType] = ['url' => $row['mirrorUrl']];
+        $allPlatforms[$p][$rowType] = ['url' => $row['mirrorUrl']];
         if ($row['quality']) {
-            $mirrors[$rowType]['quality'] = $row['quality'];
+            $allPlatforms[$p][$rowType]['quality'] = $row['quality'];
+        }
+        // Also keep flat for backward compatibility (if platform is specific)
+        if ($platform !== 'all' || $p === $platform) {
+            $mirrors[$rowType] = ['url' => $row['mirrorUrl']];
+            if ($row['quality']) {
+                $mirrors[$rowType]['quality'] = $row['quality'];
+            }
         }
     }
-    
-    // Build the standardized mirrorUrls structure
+
+    // Build response
     $mirrorUrls = [];
-    
-    // artworkUrl: custom mirror or track inherits from collection
     $artworkMirror = null;
     if ($type === 'track' && !empty($id)) {
-        // Try to find collection artwork mirror for tracks
         $collectionId = null;
         $trackStmt = getStatement("SELECT collectionId FROM tracks WHERE trackId = :id");
         $trackStmt->bindValue(':id', $id);
-        $trackRow = $trackStmt->execute()->fetchArray(SQLITE3_ASSOC);
+        $trackStmt->execute();
+        $trackRow = $trackStmt->fetch(PDO::FETCH_ASSOC);
         if ($trackRow && !empty($trackRow['collectionId'])) {
             $collectionId = $trackRow['collectionId'];
             $collStmt = getStatement("SELECT mirrorUrl FROM entityMirrors 
                                       WHERE entityType = 'collection' AND entityId = :cid 
-                                      AND urlType = 'artworkUrl' AND platform = :p LIMIT 1");
+                                      AND urlType = 'artworkUrl'");
+            if ($platform !== 'all') {
+                $collStmt = getStatement($collStmt->queryString . " AND platform = :p LIMIT 1");
+                $collStmt->bindValue(':p', $platform);
+            } else {
+                $collStmt = getStatement($collStmt->queryString . " LIMIT 1");
+            }
             $collStmt->bindValue(':cid', $collectionId);
-            $collStmt->bindValue(':p', $platform);
-            $collRow = $collStmt->execute()->fetchArray(SQLITE3_ASSOC);
+            $collStmt->execute();
+            $collRow = $collStmt->fetch(PDO::FETCH_ASSOC);
             if ($collRow && !empty($collRow['mirrorUrl'])) {
                 $artworkMirror = $collRow['mirrorUrl'];
             }
@@ -499,23 +524,22 @@ function getMirrorUrls(SQLite3 $db, string $type, string $id, ?string $urlType =
         $artworkMirror = $mirrors['artworkUrl']['url'];
     }
     $mirrorUrls['artworkUrl'] = $artworkMirror ? ['url' => $artworkMirror] : null;
-    
-    // previewUrl: only from custom mirror
     $previewMirror = isset($mirrors['previewUrl']) ? $mirrors['previewUrl']['url'] : null;
     $mirrorUrls['previewUrl'] = $previewMirror ? ['url' => $previewMirror] : null;
-    
-    // audioUrl: only from custom audio mirrors (best quality available)
     $bestAudio = getBestAvailableQuality($mirrors);
     $mirrorUrls['audioUrl'] = $bestAudio;
-    
+
     return [
         'success' => true,
         'entityType' => $type,
         'entityId' => denormalizeId($id),
-        'mirrorUrls' => $mirrorUrls
+        'platform' => $platform,
+        'mirrorUrls' => $mirrorUrls,
+        'allPlatforms' => $allPlatforms, // optional, for UI
     ];
 }
-function deleteMirrorUrl(SQLite3 $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, string $platform = 'bale'): array {
+
+function deleteMirrorUrl(PDO $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, string $platform = 'telegram'): array {
     $id = normalizeId($id);
     if ($urlType) {
         $actual = getAudioUrlTypeWithQuality($urlType, $quality);
@@ -532,19 +556,20 @@ function deleteMirrorUrl(SQLite3 $db, string $type, string $id, ?string $urlType
 }
 
 // ── Lyrics ────────────────────────────────────────────────
-function getLyrics(SQLite3 $db, string $trackId): array {
+function getLyrics(PDO $db, string $trackId): array {
     $trackId = normalizeId($trackId);
     $stmt = getStatement("SELECT lyrics FROM tracks WHERE trackId = :id");
     $stmt->bindValue(':id', $trackId);
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($row && !empty($row['lyrics'])) return ['success'=>true, 'trackId'=>denormalizeId($trackId), 'lyrics'=>json_decode($row['lyrics'], true)];
     return ['success'=>false, 'error'=>'Lyrics not found'];
 }
-function saveLyrics(SQLite3 $db, string $trackId, $lyrics): array {
+function saveLyrics(PDO $db, string $trackId, $lyrics): array {
     $trackId = normalizeId($trackId);
     $lyricsJson = is_string($lyrics) ? $lyrics : json_encode($lyrics);
     if (json_decode($lyricsJson) === null) return ['success'=>false, 'error'=>'Invalid JSON'];
-    $stmt = getStatement("INSERT OR IGNORE INTO tracks (trackId) VALUES (:id)");
+    $stmt = getStatement("INSERT IGNORE INTO tracks (trackId) VALUES (:id)");
     $stmt->bindValue(':id', $trackId);
     $stmt->execute();
     $stmt = getStatement("UPDATE tracks SET lyrics = :lyrics WHERE trackId = :id");
@@ -554,8 +579,42 @@ function saveLyrics(SQLite3 $db, string $trackId, $lyrics): array {
     return ['success'=>true, 'message'=>'Lyrics saved'];
 }
 
-// ── Fetch single entity (with auto-fallback to iTunes) ───
-function fetchEntityById(SQLite3 $db, string $type, string $id, ?string $quality = null, string $platform = 'bale'): ?array {
+/**
+ * Fetch lyrics from LRCLIB based on track metadata.
+ * Returns the full API response as a JSON string, or null on failure.
+ */
+function fetchLyricsFromLrclib(string $trackName, string $artistName, ?string $albumName = null): ?string {
+    $params = [
+        'track_name' => $trackName,
+        'artist_name' => $artistName,
+    ];
+    if ($albumName) {
+        $params['album_name'] = $albumName;
+    }
+    $url = 'https://lrclib.net/api/get?' . http_build_query($params);
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 10,
+        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($httpCode === 200 && $response) {
+        $data = json_decode($response, true);
+        if ($data) {
+            // Store the complete response to preserve all lyric fields
+            return json_encode($data);
+        }
+    }
+    return null;
+}
+
+// ── Fetch single entity ───────────────────────────────────
+function fetchEntityById(PDO $db, string $type, string $id, ?string $quality = null, string $platform = 'telegram'): ?array {
     $id = normalizeId($id);
     $table = match ($type) {
         'artist' => 'artists',
@@ -567,10 +626,10 @@ function fetchEntityById(SQLite3 $db, string $type, string $id, ?string $quality
     $pk = $type . 'Id';
     $stmt = getStatement("SELECT * FROM $table WHERE $pk = :id");
     $stmt->bindValue(':id', $id);
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($row) {
         attachMirrors($row, $type, $id, $quality, $platform);
-        // Attach lyrics for tracks
         if ($type === 'track') {
             $lyricsData = getLyrics($db, $id);
             if ($lyricsData['success']) {
@@ -588,7 +647,8 @@ function fetchEntityById(SQLite3 $db, string $type, string $id, ?string $quality
 function getAdaptiveTTL(): int {
     $db = getDB();
     $stmt = getStatement("SELECT successfulRequests, failedRequests FROM rateLimitLog WHERE apiName='itunes' LIMIT 1");
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     $base = CACHE_DURATION;
     if ($row) {
         $total = $row['successfulRequests'] + $row['failedRequests'];
@@ -613,27 +673,28 @@ function extractResultIds(array $results): string {
     }
     return json_encode($ids);
 }
-function saveCacheIds(SQLite3 $db, string $endpoint, array $params, array $results): void {
+function saveCacheIds(PDO $db, string $endpoint, array $params, array $results): void {
     $idsJson = extractResultIds($results);
     if ($idsJson === '[]') return;
     $paramsJson = json_encode($params);
     $ttl = CACHE_ADAPTIVE_TTL ? getAdaptiveTTL() : CACHE_DURATION;
     $expires = date('Y-m-d H:i:s', time() + $ttl);
-    $stmt = getStatement("INSERT OR REPLACE INTO requestCache (endpoint, params, resultIds, expiresAt, lastAccessed, accessCount) VALUES (:ep, :p, :ids, :ex, datetime('now'), 1)");
+    $stmt = getStatement("REPLACE INTO requestCache (endpoint, params, resultIds, expiresAt, lastAccessed, accessCount) VALUES (:ep, :p, :ids, :ex, NOW(), 1)");
     $stmt->bindValue(':ep', $endpoint);
     $stmt->bindValue(':p', $paramsJson);
     $stmt->bindValue(':ids', $idsJson);
     $stmt->bindValue(':ex', $expires);
     $stmt->execute();
 }
-function getCachedResults(SQLite3 $db, string $endpoint, array $params): ?array {
+function getCachedResults(PDO $db, string $endpoint, array $params): ?array {
     $paramsJson = json_encode($params);
-    $stmt = getStatement("SELECT resultIds, expiresAt FROM requestCache WHERE endpoint=:ep AND params=:p AND expiresAt > datetime('now') LIMIT 1");
+    $stmt = getStatement("SELECT resultIds, expiresAt FROM requestCache WHERE endpoint=:ep AND params=:p AND expiresAt > NOW() LIMIT 1");
     $stmt->bindValue(':ep', $endpoint);
     $stmt->bindValue(':p', $paramsJson);
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) return null;
-    $stmt = getStatement("UPDATE requestCache SET accessCount = accessCount + 1, lastAccessed = datetime('now') WHERE endpoint=:ep AND params=:p");
+    $stmt = getStatement("UPDATE requestCache SET accessCount = accessCount + 1, lastAccessed = NOW() WHERE endpoint=:ep AND params=:p");
     $stmt->bindValue(':ep', $endpoint);
     $stmt->bindValue(':p', $paramsJson);
     $stmt->execute();
@@ -641,27 +702,27 @@ function getCachedResults(SQLite3 $db, string $endpoint, array $params): ?array 
     if (!$ids) return null;
     $results = [];
     foreach ($ids as $entry) {
-        // Pass quality/platform from original params (if any)
         $quality = $params['quality'] ?? null;
-        $platform = $params['platform'] ?? 'bale';
+        $platform = $params['platform'] ?? 'telegram';
         $entity = fetchEntityById($db, $entry['type'], $entry['id'], $quality, $platform);
         if ($entity) $results[] = $entity;
     }
     return ['resultCount'=>count($results), 'results'=>$results];
 }
-function cleanExpiredCache(SQLite3 $db): void {
+function cleanExpiredCache(PDO $db): void {
     $now = time();
     $stmt = getStatement("SELECT lastRequestTime FROM rateLimitLog WHERE apiName = 'system_cleanup' LIMIT 1");
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     $lastCleanup = $row ? strtotime($row['lastRequestTime']) : 0;
 
     if (($now - $lastCleanup) > 1800) {
-        $db->exec("DELETE FROM requestCache WHERE expiresAt < datetime('now')");
-        $db->exec("DELETE FROM offlineCache WHERE expiresAt < datetime('now')");
-        $db->exec("DELETE FROM requestHistory WHERE requestTime < datetime('now', '-7 days')");
-        $db->exec("UPDATE proxyStatus SET isBlocked = 0, blockedUntil = NULL WHERE blockedUntil < datetime('now', '-24 hours')");
+        $db->exec("DELETE FROM requestCache WHERE expiresAt < NOW()");
+        $db->exec("DELETE FROM offlineCache WHERE expiresAt < NOW()");
+        $db->exec("DELETE FROM requestHistory WHERE requestTime < DATE_SUB(NOW(), INTERVAL 7 DAY)");
+        $db->exec("UPDATE proxyStatus SET isBlocked = 0, blockedUntil = NULL WHERE blockedUntil < DATE_SUB(NOW(), INTERVAL 24 HOUR)");
 
-        $stmt = getStatement("INSERT OR REPLACE INTO rateLimitLog (apiName, lastRequestTime) VALUES ('system_cleanup', datetime('now'))");
+        $stmt = getStatement("REPLACE INTO rateLimitLog (apiName, lastRequestTime) VALUES ('system_cleanup', NOW())");
         $stmt->execute();
     }
 }
@@ -669,7 +730,7 @@ function saveToOfflineCache(string $type, string $id, array $data): void {
     $db = getDB();
     $id = normalizeId($id);
     $expires = date('Y-m-d H:i:s', time() + CACHE_DURATION * 2);
-    $stmt = getStatement("INSERT OR REPLACE INTO offlineCache (entityType, entityId, data, expiresAt) VALUES (:t, :id, :data, :ex)");
+    $stmt = getStatement("REPLACE INTO offlineCache (entityType, entityId, data, expiresAt) VALUES (:t, :id, :data, :ex)");
     $stmt->bindValue(':t', $type);
     $stmt->bindValue(':id', $id);
     $stmt->bindValue(':data', json_encode($data));
@@ -679,14 +740,15 @@ function saveToOfflineCache(string $type, string $id, array $data): void {
 function getFromOfflineCache(string $type, string $id): ?array {
     $db = getDB();
     $id = normalizeId($id);
-    $stmt = getStatement("SELECT data FROM offlineCache WHERE entityType=:t AND entityId=:id AND expiresAt > datetime('now')");
+    $stmt = getStatement("SELECT data FROM offlineCache WHERE entityType=:t AND entityId=:id AND expiresAt > NOW()");
     $stmt->bindValue(':t', $type);
     $stmt->bindValue(':id', $id);
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ? json_decode($row['data'], true) : null;
 }
 
-// ── Rate Limiting & Proxies (simplified core) ────────────
+// ── Rate Limiting & Proxies ──────────────────────────────
 function checkRateLimit(string $api = 'itunes'): bool {
     global $lastRequestTime;
     if (ENABLE_REQUEST_THROTTLING) {
@@ -695,7 +757,6 @@ function checkRateLimit(string $api = 'itunes'): bool {
         if ($lastRequestTime > 0 && $elapsed < THROTTLE_MIN_INTERVAL) usleep(THROTTLE_MIN_INTERVAL - $elapsed);
         $lastRequestTime = microtime(true);
     }
-    // Actual rate limit logic (simplified for brevity – production version includes full adaptive limits)
     return true;
 }
 function handleRateLimitHit(string $api = 'itunes'): void { /* log and block */ }
@@ -715,10 +776,11 @@ function getNextProxy(): ?string {
         $db = getDB();
         $stmt = getStatement("SELECT isBlocked, blockedUntil FROM proxyStatus WHERE proxyUrl = :url");
         $stmt->bindValue(':url', $proxy);
-        $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row || !$row['isBlocked'] || strtotime($row['blockedUntil']) < time()) {
             $currentProxyIndex = ($idx + 1) % count($proxies);
-            $stmt = getStatement("INSERT INTO proxyStatus (proxyUrl, lastUsed) VALUES (:url, datetime('now')) ON CONFLICT(proxyUrl) DO UPDATE SET lastUsed = datetime('now')");
+            $stmt = getStatement("REPLACE INTO proxyStatus (proxyUrl, lastUsed) VALUES (:url, NOW())");
             $stmt->bindValue(':url', $proxy);
             $stmt->execute();
             return $proxy;
@@ -732,7 +794,7 @@ function markProxyStatus(string $proxy, bool $success): void {
     if ($success) {
         $stmt = getStatement("UPDATE proxyStatus SET successCount = successCount + 1, isBlocked = 0 WHERE proxyUrl = :url");
     } else {
-        $stmt = getStatement("UPDATE proxyStatus SET failCount = failCount + 1, isBlocked = 1, blockedUntil = datetime('now', '+1 hour') WHERE proxyUrl = :url");
+        $stmt = getStatement("UPDATE proxyStatus SET failCount = failCount + 1, isBlocked = 1, blockedUntil = DATE_ADD(NOW(), INTERVAL 1 HOUR) WHERE proxyUrl = :url");
     }
     $stmt->bindValue(':url', $proxy);
     $stmt->execute();
@@ -763,14 +825,13 @@ function makeApiRequest(string $url, int $retry = 0): ?array {
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-    $headers = substr($response, 0, $headerSize);
     $body = substr($response, $headerSize);
     $db = getDB();
-    $stmt = getStatement("INSERT INTO requestHistory (requestTime, endpoint, statusCode, responseTime, success) VALUES (datetime('now'), :ep, :code, :time, :success)");
+    $stmt = getStatement("INSERT INTO requestHistory (requestTime, endpoint, statusCode, responseTime, success) VALUES (NOW(), :ep, :code, :time, :success)");
     $stmt->bindValue(':ep', $url);
-    $stmt->bindValue(':code', $httpCode, SQLITE3_INTEGER);
-    $stmt->bindValue(':time', curl_getinfo($ch, CURLINFO_TOTAL_TIME_T), SQLITE3_INTEGER);
-    $stmt->bindValue(':success', $httpCode === 200 ? 1 : 0, SQLITE3_INTEGER);
+    $stmt->bindValue(':code', $httpCode, PDO::PARAM_INT);
+    $stmt->bindValue(':time', curl_getinfo($ch, CURLINFO_TOTAL_TIME_T), PDO::PARAM_INT);
+    $stmt->bindValue(':success', $httpCode === 200 ? 1 : 0, PDO::PARAM_INT);
     $stmt->execute();
     curl_close($ch);
     if ($httpCode === 200) {
@@ -792,7 +853,6 @@ function makeApiRequest(string $url, int $retry = 0): ?array {
 function makeApiRequestWithFallback(string $url, array $params, int $retry = 0): array {
     $response = makeApiRequest($url, $retry);
     if ($response && isset($response['results'])) {
-        // This is a successful live API response
         $response['source'] = 'api';
         foreach ($response['results'] as $item) {
             $type = $item['wrapperType'] ?? (isset($item['artistId']) && !isset($item['collectionId']) ? 'artist' : (isset($item['collectionId']) && !isset($item['trackId']) ? 'collection' : (isset($item['trackId']) ? 'track' : null)));
@@ -808,7 +868,7 @@ function makeApiRequestWithFallback(string $url, array $params, int $retry = 0):
             foreach (['artist', 'collection', 'track'] as $type) {
                 $cached = getFromOfflineCache($type, $id);
                 if ($cached) {
-                    attachMirrors($cached, $type, $id, $params['quality'] ?? null, $params['platform'] ?? 'bale');
+                    attachMirrors($cached, $type, $id, $params['quality'] ?? null, $params['platform'] ?? 'telegram');
                     $results[] = $cached;
                     break;
                 }
@@ -821,32 +881,32 @@ function makeApiRequestWithFallback(string $url, array $params, int $retry = 0):
 function searchLocalDatabase(array $params): array {
     $db = getDB();
     $results = [];
-    $platform = $params['platform'] ?? 'bale';
+    $platform = $params['platform'] ?? 'telegram';
     if (isset($params['term'])) {
         $term = '%' . strtolower($params['term']) . '%';
         $entity = $params['entity'] ?? 'all';
-        $limit = min((int)($params['limit'] ?? 50), 200);
+        $limit = min((int)($params['limit'] ?? 50), 500);
         $quality = $params['quality'] ?? null;
         if ($entity === 'all' || $entity === 'musicArtist') {
             $stmt = getStatement("SELECT *, 'artist' as wrapperType FROM artists WHERE LOWER(artistName) LIKE :term LIMIT :limit");
             $stmt->bindValue(':term', $term);
-            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
-            $res = $stmt->execute();
-            while ($row = $res->fetchArray(SQLITE3_ASSOC)) { attachMirrors($row, 'artist', $row['artistId'], $quality, $platform); $results[] = $row; }
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { attachMirrors($row, 'artist', $row['artistId'], $quality, $platform); $results[] = $row; }
         }
         if ($entity === 'all' || $entity === 'collection') {
             $stmt = getStatement("SELECT *, 'collection' as wrapperType FROM collections WHERE LOWER(collectionName) LIKE :term LIMIT :limit");
             $stmt->bindValue(':term', $term);
-            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
-            $res = $stmt->execute();
-            while ($row = $res->fetchArray(SQLITE3_ASSOC)) { attachMirrors($row, 'collection', $row['collectionId'], $quality, $platform); $results[] = $row; }
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { attachMirrors($row, 'collection', $row['collectionId'], $quality, $platform); $results[] = $row; }
         }
         if ($entity === 'all' || $entity === 'song') {
             $stmt = getStatement("SELECT *, 'track' as wrapperType FROM tracks WHERE LOWER(trackName) LIKE :term LIMIT :limit");
             $stmt->bindValue(':term', $term);
-            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
-            $res = $stmt->execute();
-            while ($row = $res->fetchArray(SQLITE3_ASSOC)) { attachMirrors($row, 'track', $row['trackId'], $quality, $platform); $results[] = $row; }
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { attachMirrors($row, 'track', $row['trackId'], $quality, $platform); $results[] = $row; }
         }
     } elseif (isset($params['id'])) {
         $ids = explode(',', $params['id']);
@@ -860,28 +920,24 @@ function searchLocalDatabase(array $params): array {
     }
     return ['resultCount'=>count($results), 'results'=>$results, 'fromCache'=>true];
 }
-function searchiTunes(SQLite3 $db, array $params): array {
-    // Check cache first
+function searchiTunes(PDO $db, array $params): array {
     $cached = getCachedResults($db, 'search', $params);
     if ($cached) {
-        // Strip mirrorUrls from cached results because search should not include them
         foreach ($cached['results'] as &$item) {
             unset($item['mirrorUrls']);
         }
         return $cached;
     }
-    
+
     $url = ITUNES_SEARCH_API . '?' . http_build_query($params);
     $response = makeApiRequestWithFallback($url, $params);
     if ($response && isset($response['results']) && $response['resultCount'] > 0 && isset($response['source']) && $response['source'] === 'api') {
-        // Only cache and save entities when it's a successful live API response
         saveEntitiesFromApi($db, 'artists', $response['results']);
         saveEntitiesFromApi($db, 'collections', $response['results']);
         saveEntitiesFromApi($db, 'tracks', $response['results']);
         saveCacheIds($db, 'search', $params, $response['results']);
     }
-    
-    // For search, we do NOT attach mirrors (mirrorUrls) at all.
+
     if ($response && isset($response['results'])) {
         foreach ($response['results'] as &$item) {
             unset($item['mirrorUrls']);
@@ -889,19 +945,17 @@ function searchiTunes(SQLite3 $db, array $params): array {
     }
     return $response ?? ['resultCount'=>0, 'results'=>[]];
 }
-function lookupiTunes(SQLite3 $db, array $params): array {
+function lookupiTunes(PDO $db, array $params): array {
     $cached = getCachedResults($db, 'lookup', $params);
     if ($cached) {
-        // Re-attach mirrors and lyrics for cached results (with correct quality/platform)
         $quality = $params['quality'] ?? null;
-        $platform = $params['platform'] ?? 'bale';
+        $platform = $params['platform'] ?? 'telegram';
         foreach ($cached['results'] as &$item) {
             $type = $item['wrapperType'] ?? null;
             if ($type === 'artist') attachMirrors($item, 'artist', $item['artistId'], $quality, $platform);
             elseif ($type === 'collection') attachMirrors($item, 'collection', $item['collectionId'], $quality, $platform);
             elseif ($type === 'track') {
                 attachMirrors($item, 'track', $item['trackId'], $quality, $platform);
-                // Attach lyrics
                 $lyricsData = getLyrics($db, $item['trackId']);
                 if ($lyricsData['success']) {
                     $item['lyrics'] = $lyricsData['lyrics'];
@@ -912,7 +966,7 @@ function lookupiTunes(SQLite3 $db, array $params): array {
         }
         return $cached;
     }
-    
+
     $apiParams = $params;
     if (isset($apiParams['id'])) {
         $ids = array_map('trim', explode(',', $apiParams['id']));
@@ -922,23 +976,21 @@ function lookupiTunes(SQLite3 $db, array $params): array {
     $url = ITUNES_LOOKUP_API . '?' . http_build_query($apiParams);
     $response = makeApiRequestWithFallback($url, $params);
     if ($response && isset($response['results']) && $response['resultCount'] > 0 && isset($response['source']) && $response['source'] === 'api') {
-        // Only cache and save entities when it's a successful live API response
         saveEntitiesFromApi($db, 'artists', $response['results']);
         saveEntitiesFromApi($db, 'collections', $response['results']);
         saveEntitiesFromApi($db, 'tracks', $response['results']);
         saveCacheIds($db, 'lookup', $params, $response['results']);
     }
-    
+
     if ($response && isset($response['results'])) {
         $quality = $params['quality'] ?? null;
-        $platform = $params['platform'] ?? 'bale';
+        $platform = $params['platform'] ?? 'telegram';
         foreach ($response['results'] as &$item) {
             $type = $item['wrapperType'] ?? null;
             if ($type === 'artist') attachMirrors($item, 'artist', $item['artistId'], $quality, $platform);
             elseif ($type === 'collection') attachMirrors($item, 'collection', $item['collectionId'], $quality, $platform);
             elseif ($type === 'track') {
                 attachMirrors($item, 'track', $item['trackId'], $quality, $platform);
-                // Add lyrics for tracks (similar to /lyrics/get)
                 $trackId = normalizeId($item['trackId']);
                 $lyricsData = getLyrics($db, $trackId);
                 if ($lyricsData['success']) {
@@ -953,7 +1005,7 @@ function lookupiTunes(SQLite3 $db, array $params): array {
 }
 
 // ── New / Enhanced Endpoints ──────────────────────────────
-function handleBatchLookup(SQLite3 $db, array $params): array {
+function handleBatchLookup(PDO $db, array $params): array {
     if (empty($params['ids'])) throw new Exception('Missing ids parameter (comma-separated)', 400);
     $ids = array_map('trim', explode(',', $params['ids']));
     $results = [];
@@ -961,7 +1013,7 @@ function handleBatchLookup(SQLite3 $db, array $params): array {
         $normalized = normalizeId($id);
         $found = false;
         foreach (['artist', 'collection', 'track'] as $type) {
-            $entity = fetchEntityById($db, $type, $normalized, $params['quality'] ?? null, $params['platform'] ?? 'bale');
+            $entity = fetchEntityById($db, $type, $normalized, $params['quality'] ?? null, $params['platform'] ?? 'telegram');
             if ($entity) {
                 $results[] = $entity;
                 $found = true;
@@ -969,147 +1021,133 @@ function handleBatchLookup(SQLite3 $db, array $params): array {
             }
         }
         if (!$found) {
-            $lookup = lookupiTunes($db, ['id' => denormalizeId($normalized), 'quality' => $params['quality'] ?? null, 'platform' => $params['platform'] ?? 'bale']);
+            $lookup = lookupiTunes($db, ['id' => denormalizeId($normalized), 'quality' => $params['quality'] ?? null, 'platform' => $params['platform'] ?? 'telegram']);
             if (!empty($lookup['results'])) $results[] = $lookup['results'][0];
         }
     }
     return ['resultCount' => count($results), 'results' => $results];
 }
-function handlePopular(SQLite3 $db, array $params): array {
+function handlePopular(PDO $db, array $params): array {
     $limit = min((int)($params['limit'] ?? 20), 100);
-    // Fixed: Use SELECT * to avoid missing column errors; order by trackId (fallback)
     $stmt = getStatement("SELECT * FROM tracks ORDER BY trackId DESC LIMIT :limit");
-    $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
-    $res = $stmt->execute();
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
     $tracks = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-        attachMirrors($row, 'track', $row['trackId'], $params['quality'] ?? null, $params['platform'] ?? 'bale');
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        attachMirrors($row, 'track', $row['trackId'], $params['quality'] ?? null, $params['platform'] ?? 'telegram');
         $tracks[] = $row;
     }
     return ['resultCount' => count($tracks), 'results' => $tracks];
 }
-function handleCacheClear(SQLite3 $db): array {
+function handleCacheClear(PDO $db): array {
     $db->exec("DELETE FROM requestCache");
     $db->exec("DELETE FROM offlineCache");
     return ['success' => true, 'message' => 'All cache cleared'];
 }
-function handleStats(SQLite3 $db): array {
-    $stmt = $db->query("SELECT COUNT(*) as total FROM requestCache WHERE expiresAt > datetime('now')");
-    $cacheCount = $stmt->fetchArray(SQLITE3_ASSOC)['total'];
+function handleStats(PDO $db): array {
+    $stmt = $db->query("SELECT COUNT(*) as total FROM requestCache WHERE expiresAt > NOW()");
+    $cacheCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
     $stmt = $db->query("SELECT COUNT(*) as total FROM tracks");
-    $trackCount = $stmt->fetchArray(SQLITE3_ASSOC)['total'];
+    $trackCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
     $stmt = $db->query("SELECT COUNT(*) as total FROM artists");
-    $artistCount = $stmt->fetchArray(SQLITE3_ASSOC)['total'];
+    $artistCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
     $stmt = $db->query("SELECT COUNT(*) as total FROM collections");
-    $albumCount = $stmt->fetchArray(SQLITE3_ASSOC)['total'];
+    $albumCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
     return [
         'cache_entries' => $cacheCount,
         'track_count' => $trackCount,
         'artist_count' => $artistCount,
         'album_count' => $albumCount,
-        'db_size_bytes' => filesize(DB_PATH),
-        'uptime_seconds' => time() - (filemtime(DB_PATH) ?? time()),
+        'db_size_bytes' => 0,
+        'uptime_seconds' => time() - (filemtime(__FILE__) ?? time()),
     ];
 }
-function handleProxyStatus(SQLite3 $db): array {
+function handleProxyStatus(PDO $db): array {
     $stmt = $db->query("SELECT proxyUrl, successCount, failCount, isBlocked, lastUsed FROM proxyStatus ORDER BY successCount DESC");
     $proxies = [];
-    while ($row = $stmt->fetchArray(SQLITE3_ASSOC)) $proxies[] = $row;
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $proxies[] = $row;
     return ['proxies' => $proxies];
 }
-function handleResetRateLimit(SQLite3 $db): array {
+function handleResetRateLimit(PDO $db): array {
     $db->exec("DELETE FROM rateLimitLog");
-    $db->exec("DELETE FROM requestHistory WHERE success = 0 AND requestTime > datetime('now', '-1 hour')");
+    $db->exec("DELETE FROM requestHistory WHERE success = 0 AND requestTime > DATE_SUB(NOW(), INTERVAL 1 HOUR)");
     return ['success' => true, 'message' => 'Rate limit counters reset'];
 }
 
 // ── Download Manager Functions ────────────────────────────
-
-/**
- * Resolve track IDs from various input types (trackId, albumId, artistId)
- * Returns array of normalized track IDs.
- */
-function resolveTrackIdsFromInput(SQLite3 $db, array $params): array {
+function resolveTrackIdsFromInput(PDO $db, array $params): array {
     $trackIds = [];
-    
-    // Direct track IDs
+
     if (!empty($params['trackId'])) {
         $ids = is_array($params['trackId']) ? $params['trackId'] : explode(',', $params['trackId']);
         foreach ($ids as $tid) {
             $trackIds[] = normalizeId(trim($tid));
         }
     }
-    
-    // Album ID: fetch all tracks from the collection (local DB or iTunes)
+
     if (!empty($params['albumId'])) {
         $albumId = normalizeId($params['albumId']);
-        // First try local DB
         $stmt = getStatement("SELECT trackId FROM tracks WHERE collectionId = :aid");
         $stmt->bindValue(':aid', $albumId);
-        $res = $stmt->execute();
+        $stmt->execute();
         $found = false;
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             $trackIds[] = $row['trackId'];
             $found = true;
         }
         if (!$found) {
-            // Lookup album from iTunes and save tracks, then fetch again
             $lookup = lookupiTunes($db, ['id' => denormalizeId($albumId), 'entity' => 'song']);
             if (!empty($lookup['results'])) {
-                // Re-fetch from DB
                 $stmt2 = getStatement("SELECT trackId FROM tracks WHERE collectionId = :aid");
                 $stmt2->bindValue(':aid', $albumId);
-                $res2 = $stmt2->execute();
-                while ($row = $res2->fetchArray(SQLITE3_ASSOC)) {
+                $stmt2->execute();
+                while ($row = $stmt2->fetch(PDO::FETCH_ASSOC)) {
                     $trackIds[] = $row['trackId'];
                 }
             }
         }
     }
-    
-    // Artist ID: fetch all tracks by that artist
+
     if (!empty($params['artistId'])) {
         $artistId = normalizeId($params['artistId']);
-        // Search local DB for tracks with this artistId
         $stmt = getStatement("SELECT trackId FROM tracks WHERE artistId = :aid");
         $stmt->bindValue(':aid', $artistId);
-        $res = $stmt->execute();
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             $trackIds[] = $row['trackId'];
         }
     }
-    
+
     return array_unique($trackIds);
 }
 
-/**
- * Add tracks to download queue.
- * @param SQLite3 $db
- * @param array $params trackId, albumId, artistId, quality, platform, priority, skipExisting
- * @return array
- */
-function handleDownloadAdd(SQLite3 $db, array $params): array {
+function handleDownloadAdd(PDO $db, array $params): array {
     $trackIds = resolveTrackIdsFromInput($db, $params);
     if (empty($trackIds)) {
         throw new Exception('No tracks resolved. Provide trackId, albumId, or artistId.', 400);
     }
-    
+
     $quality = $params['quality'] ?? DEFAULT_AUDIO_QUALITY;
-    $platform = $params['platform'] ?? 'bale';
+    $platform = $params['platform'] ?? 'telegram';
     $priority = (int)($params['priority'] ?? 0);
     $skipExisting = filter_var($params['skipExisting'] ?? true, FILTER_VALIDATE_BOOL);
-    
+    $force = filter_var($params['force'] ?? false, FILTER_VALIDATE_BOOL);
+    $initialStatus = $params['status'] ?? DOWNLOAD_STATUS_PENDING;
+    if (!in_array($initialStatus, [DOWNLOAD_STATUS_PENDING, DOWNLOAD_STATUS_DOWNLOADING, DOWNLOAD_STATUS_PAUSED])) {
+        $initialStatus = DOWNLOAD_STATUS_PENDING;
+    }
+
     $added = [];
     $skipped = [];
     $failed = [];
-    
-    $db->exec('BEGIN TRANSACTION');
+
+    $db->beginTransaction();
     foreach ($trackIds as $tid) {
-        // Prevent duplicate: skip if already in queue with non-terminal status
         if ($skipExisting) {
             $stmt = getStatement("SELECT id, status FROM download_queue WHERE trackId = :tid AND status NOT IN ('completed', 'failed', 'stopped')");
             $stmt->bindValue(':tid', $tid);
-            $existing = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+            $stmt->execute();
+            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($existing) {
                 $skipped[] = [
                     'trackId' => denormalizeId($tid),
@@ -1118,11 +1156,9 @@ function handleDownloadAdd(SQLite3 $db, array $params): array {
                 continue;
             }
         }
-        
-        // Ensure track exists in tracks table (fetch if missing)
+
         $track = fetchEntityById($db, 'track', $tid, $quality, $platform);
         if (!$track) {
-            // Try to lookup from iTunes
             $lookup = lookupiTunes($db, ['id' => denormalizeId($tid)]);
             if (empty($lookup['results'])) {
                 $failed[] = [
@@ -1132,37 +1168,48 @@ function handleDownloadAdd(SQLite3 $db, array $params): array {
                 continue;
             }
             $track = $lookup['results'][0];
+            attachMirrors($track, 'track', $tid, $quality, $platform);
         }
-        
-        // Insert into download queue
-        $stmt = getStatement("INSERT INTO download_queue (trackId, status, quality, platform, priority, addedAt) 
-                              VALUES (:tid, :status, :qual, :plat, :prio, datetime('now'))");
+
+        $hasAudio = isset($track['mirrorUrls']['audioUrl']) && !empty($track['mirrorUrls']['audioUrl']['url']);
+        if ($hasAudio && !$force) {
+            $finalStatus = DOWNLOAD_STATUS_COMPLETED;
+            $completedAt = 'NOW()';
+        } else {
+            $finalStatus = $initialStatus;
+            $completedAt = null;
+        }
+
+        $sql = "INSERT INTO download_queue (trackId, status, quality, platform, priority, addedAt, completedAt) 
+                VALUES (:tid, :status, :qual, :plat, :prio, NOW(), " . ($completedAt ? 'NOW()' : 'NULL') . ")";
+        $stmt = getStatement($sql);
         $stmt->bindValue(':tid', $tid);
-        $stmt->bindValue(':status', DOWNLOAD_STATUS_PENDING);
+        $stmt->bindValue(':status', $finalStatus);
         $stmt->bindValue(':qual', $quality);
         $stmt->bindValue(':plat', $platform);
-        $stmt->bindValue(':prio', $priority, SQLITE3_INTEGER);
+        $stmt->bindValue(':prio', $priority, PDO::PARAM_INT);
         $stmt->execute();
-        
-        $downloadId = $db->lastInsertRowID();
-        
-        // Attach full track details (mirrors, lyrics) to the response
+
+        $downloadId = $db->lastInsertId();
+
         $trackData = fetchEntityById($db, 'track', $tid, $quality, $platform);
         if (!$trackData) {
-            $trackData = $track; // fallback to the track we already have
+            $trackData = $track;
             attachMirrors($trackData, 'track', $tid, $quality, $platform);
-            $lyricsData = getLyrics($db, $tid);
-            if ($lyricsData['success']) $trackData['lyrics'] = $lyricsData['lyrics'];
         }
-        
+        $lyricsData = getLyrics($db, $tid);
+        if ($lyricsData['success']) {
+            $trackData['lyrics'] = $lyricsData['lyrics'];
+        }
+
         $added[] = [
             'downloadId' => $downloadId,
             'trackId' => denormalizeId($tid),
             'track' => $trackData
         ];
     }
-    $db->exec('COMMIT');
-    
+    $db->commit();
+
     return [
         'success' => true,
         'added_count' => count($added),
@@ -1173,49 +1220,40 @@ function handleDownloadAdd(SQLite3 $db, array $params): array {
         'failed' => $failed
     ];
 }
-
-/**
- * Get download queue with optional filters.
- * Returns each item as a full track object (mirrors, lyrics) plus download metadata.
- */
-function handleDownloadQueue(SQLite3 $db, array $params): array {
+function handleDownloadQueue(PDO $db, array $params): array {
     $status = $params['status'] ?? null;
-    $limit = min((int)($params['limit'] ?? 100), 500);
+    $limit = min((int)($params['limit'] ?? 100), 2000);
     $offset = (int)($params['offset'] ?? 0);
     $quality = $params['quality'] ?? null;
-    $platform = $params['platform'] ?? 'bale';
-    
+    $platform = $params['platform'] ?? 'telegram';
+
     $sql = "SELECT d.* FROM download_queue d";
     $countSql = "SELECT COUNT(*) as total FROM download_queue d";
-    
+
     if ($status && in_array($status, [DOWNLOAD_STATUS_PENDING, DOWNLOAD_STATUS_DOWNLOADING, DOWNLOAD_STATUS_PAUSED, DOWNLOAD_STATUS_COMPLETED, DOWNLOAD_STATUS_FAILED, DOWNLOAD_STATUS_STOPPED])) {
         $sql .= " WHERE d.status = :status";
         $countSql .= " WHERE d.status = :status";
     }
-    
+
     $sql .= " ORDER BY d.priority DESC, d.addedAt ASC LIMIT :limit OFFSET :offset";
-    
+
     $stmt = getStatement($sql);
     $countStmt = getStatement($countSql);
-    
+
     if ($status) {
         $stmt->bindValue(':status', $status);
         $countStmt->bindValue(':status', $status);
     }
-    $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
-    $stmt->bindValue(':offset', $offset, SQLITE3_INTEGER);
-    
-    $res = $stmt->execute();
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->execute();
     $items = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $tid = $row['trackId'];
-        // Fetch full track data with mirrors and lyrics
         $trackData = fetchEntityById($db, 'track', $tid, $quality, $platform);
         if (!$trackData) {
-            // Fallback: only trackId known
             $trackData = ['trackId' => denormalizeId($tid)];
         }
-        // Merge download metadata with track data
         $downloadMeta = [
             'download_id' => $row['id'],
             'download_status' => $row['status'],
@@ -1231,10 +1269,10 @@ function handleDownloadQueue(SQLite3 $db, array $params): array {
         ];
         $items[] = array_merge($trackData, $downloadMeta);
     }
-    
-    $totalRes = $countStmt->execute();
-    $total = $totalRes->fetchArray(SQLITE3_ASSOC)['total'] ?? 0;
-    
+
+    $countStmt->execute();
+    $total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
+
     return [
         'success' => true,
         'total' => (int)$total,
@@ -1244,40 +1282,36 @@ function handleDownloadQueue(SQLite3 $db, array $params): array {
     ];
 }
 
-/**
- * Get status of a specific download entry (by id or trackId).
- * Returns full track data + download metadata.
- */
-function handleDownloadStatus(SQLite3 $db, array $params): array {
+function handleDownloadStatus(PDO $db, array $params): array {
     $id = $params['id'] ?? null;
     $trackId = $params['trackId'] ?? null;
     $quality = $params['quality'] ?? null;
-    $platform = $params['platform'] ?? 'bale';
-    
+    $platform = $params['platform'] ?? 'telegram';
+
     if (!$id && !$trackId) {
         throw new Exception('Missing id or trackId parameter', 400);
     }
-    
+
     if ($id) {
         $stmt = getStatement("SELECT * FROM download_queue WHERE id = :id");
-        $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
     } else {
         $tid = normalizeId($trackId);
         $stmt = getStatement("SELECT * FROM download_queue WHERE trackId = :tid ORDER BY id DESC LIMIT 1");
         $stmt->bindValue(':tid', $tid);
     }
-    
-    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
         return ['success' => false, 'error' => 'Download entry not found'];
     }
-    
+
     $tid = $row['trackId'];
     $trackData = fetchEntityById($db, 'track', $tid, $quality, $platform);
     if (!$trackData) {
         $trackData = ['trackId' => denormalizeId($tid)];
     }
-    
+
     $downloadMeta = [
         'download_id' => $row['id'],
         'download_status' => $row['status'],
@@ -1291,26 +1325,14 @@ function handleDownloadStatus(SQLite3 $db, array $params): array {
         'retry_count' => $row['retryCount'],
         'priority' => $row['priority']
     ];
-    
+
     return [
         'success' => true,
         'download' => array_merge($trackData, $downloadMeta)
     ];
 }
 
-/**
- * Batch update download entries.
- * Supports:
- * - Single: id + status/filePath/errorMessage
- * - Multiple IDs: id = "1,2,3" or id = [1,2,3] (renamed from 'ids')
- * - Multiple IDs also via 'ids' (backward compatibility)
- * - By track IDs: trackIds = ["123","456"] + status
- * - By current status: filterStatus = "pending" + status = "downloading"
- */
-/**
- * Batch update download entries.
- */
-function handleDownloadUpdate(SQLite3 $db, array $params): array {
+function handleDownloadUpdate(PDO $db, array $params): array {
     $idParam = $params['id'] ?? $params['ids'] ?? null;
     $trackIdsRaw = $params['trackIds'] ?? [];
     $filterStatus = $params['filterStatus'] ?? null;
@@ -1318,7 +1340,6 @@ function handleDownloadUpdate(SQLite3 $db, array $params): array {
     $filePath = $params['filePath'] ?? null;
     $errorMessage = $params['errorMessage'] ?? null;
 
-    // 1. Resolve Target IDs
     $targetIds = [];
     if ($idParam !== null) {
         $idArray = is_array($idParam) ? $idParam : explode(',', (string)$idParam);
@@ -1329,20 +1350,19 @@ function handleDownloadUpdate(SQLite3 $db, array $params): array {
         $placeholders = implode(',', array_fill(0, count($normalizedIds), '?'));
         $stmt = $db->prepare("SELECT id FROM download_queue WHERE trackId IN ($placeholders)");
         foreach ($normalizedIds as $i => $tid) $stmt->bindValue($i + 1, $tid);
-        $res = $stmt->execute();
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $targetIds[] = $row['id'];
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $targetIds[] = $row['id'];
     } elseif ($filterStatus !== null) {
         $stmt = $db->prepare("SELECT id FROM download_queue WHERE status = :status");
         $stmt->bindValue(':status', $filterStatus);
-        $res = $stmt->execute();
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $targetIds[] = $row['id'];
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $targetIds[] = $row['id'];
     }
 
     if (empty($targetIds)) {
         return ['success' => true, 'updated_count' => 0, 'message' => 'No matching entries found'];
     }
 
-    // 2. Build Update Clause
     $updates = [];
     $updateBindings = [];
     if ($status !== null && $status !== '') {
@@ -1350,9 +1370,9 @@ function handleDownloadUpdate(SQLite3 $db, array $params): array {
         if (!in_array($status, $allowed)) throw new Exception('Invalid status', 400);
         $updates[] = "status = ?";
         $updateBindings[] = $status;
-        if ($status === DOWNLOAD_STATUS_DOWNLOADING) $updates[] = "startedAt = COALESCE(startedAt, datetime('now'))";
+        if ($status === DOWNLOAD_STATUS_DOWNLOADING) $updates[] = "startedAt = COALESCE(startedAt, NOW())";
         if ($status === DOWNLOAD_STATUS_COMPLETED) {
-            $updates[] = "completedAt = datetime('now')";
+            $updates[] = "completedAt = NOW()";
             $updates[] = "errorMessage = NULL";
         }
     }
@@ -1371,62 +1391,48 @@ function handleDownloadUpdate(SQLite3 $db, array $params): array {
 
     if (empty($updates)) throw new Exception('Nothing to update', 400);
 
-    // 3. Execution
-    $db->exec('BEGIN TRANSACTION');
+    $db->beginTransaction();
     try {
         $placeholders = implode(',', array_fill(0, count($targetIds), '?'));
         $sql = "UPDATE download_queue SET " . implode(', ', $updates) . " WHERE id IN ($placeholders)";
         $stmt = $db->prepare($sql);
-
         $pos = 1;
         foreach ($updateBindings as $val) {
-            $stmt->bindValue($pos++, $val, is_int($val) ? SQLITE3_INTEGER : SQLITE3_TEXT);
+            $stmt->bindValue($pos++, $val, is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR);
         }
         foreach ($targetIds as $id) {
-            $stmt->bindValue($pos++, $id, SQLITE3_INTEGER);
+            $stmt->bindValue($pos++, $id, PDO::PARAM_INT);
         }
-
-        $result = $stmt->execute();
-        $db->exec('COMMIT');
+        $stmt->execute();
+        $db->commit();
     } catch (Exception $e) {
-        $db->exec('ROLLBACK');
+        $db->rollBack();
         throw $e;
     }
     return ['success' => true, 'updated_count' => count($targetIds), 'message' => 'Updated successfully'];
 }
-/**
- * Batch delete download entries.
- * Supports:
- * - Single: id or trackId
- * - Multiple IDs: id = "1,2,3" or id = [1,2,3] (renamed from 'ids')
- * - Multiple IDs also via 'ids' (backward compatibility)
- * - By track IDs: trackIds = ["123","456"]
- * - By status: status = "completed"
- * - All: all = true
- */
-function handleDownloadDelete(SQLite3 $db, array $params): array {
+
+function handleDownloadDelete(PDO $db, array $params): array {
     $idParam = $params['id'] ?? null;
     $idsParam = $params['ids'] ?? null;
     $trackIdsRaw = $params['trackIds'] ?? [];
     $status = $params['status'] ?? null;
     $all = filter_var($params['all'] ?? false, FILTER_VALIDATE_BOOL);
-    
-    // Single parameters for backward compatibility
+
     $singleId = $params['id'] ?? null;
     $singleTrackId = $params['trackId'] ?? null;
-    
+
     if (!$idParam && !$idsParam && !$trackIdsRaw && !$status && !$all && !$singleId && !$singleTrackId) {
         throw new Exception('No deletion criteria: provide id, trackId, ids, trackIds, status, or all', 400);
     }
-    
+
     $sql = "DELETE FROM download_queue";
     $bindings = [];
     $conditions = [];
-    
+
     if ($all) {
-        // Delete everything, no WHERE
+        // no WHERE
     } elseif ($idParam !== null) {
-        // id can be a string like "1,2,3" or an array
         if (is_array($idParam)) {
             $idsArray = array_map('intval', $idParam);
         } else {
@@ -1436,7 +1442,6 @@ function handleDownloadDelete(SQLite3 $db, array $params): array {
         $conditions[] = "id IN ($placeholders)";
         $bindings = array_merge($bindings, $idsArray);
     } elseif (!empty($idsParam)) {
-        // Legacy 'ids' parameter
         if (is_array($idsParam)) {
             $idsArray = array_map('intval', $idsParam);
         } else {
@@ -1461,19 +1466,19 @@ function handleDownloadDelete(SQLite3 $db, array $params): array {
         $conditions[] = "trackId = ?";
         $bindings[] = normalizeId($singleTrackId);
     }
-    
+
     if (!empty($conditions)) {
         $sql .= " WHERE " . implode(' AND ', $conditions);
     }
-    
+
     $stmt = getStatement($sql);
     foreach ($bindings as $idx => $val) {
-        $type = is_int($val) ? SQLITE3_INTEGER : SQLITE3_TEXT;
+        $type = is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR;
         $stmt->bindValue($idx + 1, $val, $type);
     }
     $stmt->execute();
-    $deleted = $db->changes();
-    
+    $deleted = $stmt->rowCount();
+
     return ['success' => true, 'deleted_count' => $deleted];
 }
 
@@ -1510,14 +1515,19 @@ function handleRequest(): void {
     $quality = $_SERVER['HTTP_QUALITY'] ?? $params['quality'] ?? null;
     if ($quality && !in_array($quality, SUPPORTED_AUDIO_QUALITIES)) $quality = DEFAULT_AUDIO_QUALITY;
     if ($quality) $params['quality'] = $quality;
-    $platform = $params['platform'] ?? 'bale';
+    $platform = $params['platform'] ?? 'telegram';
+
+    // If platform is not set in mirror/get, default to 'all'
+    if ($path === '/mirror/get' && !isset($params['platform'])) {
+        $params['platform'] = 'all';
+    }
+
     try {
         switch ($path) {
-            // Original endpoints
             case '/search': if (empty($params['term'])) throw new Exception('Missing term', 400); $response = searchiTunes($db, $params); break;
             case '/lookup': if (empty($params['id'])) throw new Exception('Missing id', 400); $response = lookupiTunes($db, $params); break;
             case '/mirror/set': if ($method !== 'POST') throw new Exception('Method not allowed', 405); $response = setMirrorUrl($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? '', $params['mirrorUrl'] ?? '', $params['quality'] ?? null, $platform); break;
-            case '/mirror/get': $response = getMirrorUrls($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null, $platform); break;
+            case '/mirror/get': $response = getMirrorUrls($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null, $params['platform'] ?? 'all'); break;
             case '/mirror/delete':
             case '/mirror/remove': if (!in_array($method, ['POST','DELETE'])) throw new Exception('Method not allowed', 405); $response = deleteMirrorUrl($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null, $platform); break;
             case '/track/save':
@@ -1537,18 +1547,34 @@ function handleRequest(): void {
                 saveEntitiesFromApi($db, 'artists', $params);
                 $response = ['success' => true, 'message' => 'Artist metadata saved'];
                 break;
-            case '/lyrics/get': if (empty($params['id'])) throw new Exception('Missing track id', 400); $response = getLyrics($db, $params['id']); break;
+            case '/lyrics/get':
+                if (empty($params['id'])) throw new Exception('Missing track id', 400);
+                $lyricsResult = getLyrics($db, $params['id']);
+                if (!$lyricsResult['success']) {
+                    $trackId = normalizeId($params['id']);
+                    $trackStmt = getStatement("SELECT * FROM tracks WHERE trackId = :tid");
+                    $trackStmt->bindValue(':tid', $trackId);
+                    $trackStmt->execute();
+                    $track = $trackStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($track && !empty($track['trackName']) && !empty($track['artistName'])) {
+                        $lyrics = fetchLyricsFromLrclib($track['trackName'], $track['artistName'], $track['collectionName'] ?? null);
+                        if ($lyrics) {
+                            saveLyrics($db, $params['id'], $lyrics);
+                            $lyricsResult = getLyrics($db, $params['id']);
+                        }
+                    }
+                }
+                $response = $lyricsResult;
+                break;
             case '/lyrics/save': if ($method !== 'POST') throw new Exception('Method not allowed', 405); if (empty($params['id']) || empty($params['lyrics'])) throw new Exception('Missing parameters', 400); $response = saveLyrics($db, $params['id'], $params['lyrics']); break;
             case '/batch': $response = handleBatchLookup($db, $params); break;
             case '/popular': $response = handlePopular($db, $params); break;
             case '/cache/clear': $response = handleCacheClear($db); break;
             case '/stats': $response = handleStats($db); break;
-            case '/health': $response = ['status'=>'ok', 'timestamp'=>date('c'), 'db_size_bytes'=>filesize(DB_PATH)]; break;
+            case '/health': $response = ['status'=>'ok', 'timestamp'=>date('c'), 'db_size_bytes'=>0]; break;
             case '/db/stats': $response = handleStats($db); break;
             case '/proxy/status': $response = handleProxyStatus($db); break;
             case '/rate-limit/reset': $response = handleResetRateLimit($db); break;
-            
-            // Download manager endpoints (batch capable with 'id' supporting multiples)
             case '/download/add':
                 if ($method !== 'POST') throw new Exception('Method not allowed', 405);
                 $response = handleDownloadAdd($db, $params);
@@ -1569,7 +1595,6 @@ function handleRequest(): void {
                 if (!in_array($method, ['POST', 'DELETE'])) throw new Exception('Method not allowed', 405);
                 $response = handleDownloadDelete($db, $params);
                 break;
-                
             default: throw new Exception('Endpoint not found', 404);
         }
     } catch (Exception $e) { respond(['success'=>false, 'error'=>$e->getMessage()], $e->getCode() ?: 500); }
@@ -1578,4 +1603,3 @@ function handleRequest(): void {
 if (php_sapi_name() !== 'cli') {
     try { handleRequest(); } catch (Throwable $e) { http_response_code(500); echo json_encode(['success'=>false, 'error'=>'Internal server error', 'message'=>$e->getMessage()]); }
 }
-
