@@ -2,7 +2,7 @@
 /**
  * iTunes API Proxy v2.0 – MySQL Edition
  * + Download Manager v1.0
- * All features preserved, now powered by MySQL (PDO).
+ * Unified attachments structure, type‑specific fields.
  */
 
 error_reporting(E_ALL);
@@ -11,9 +11,9 @@ ini_set('log_errors', 1);
 
 // ── MySQL Configuration ────────────────────────────────────
 define('DEST_HOST', 'localhost');
-define('DEST_NAME', 'rahir111_abraava');
-define('DEST_USER', 'rahir111_admin');
-define('DEST_PASS', 's.hH3KolwG=J!qRY');
+define('DEST_NAME', 'abraava');
+define('DEST_USER', 'root');
+define('DEST_PASS', '');
 define('DEST_PORT', 3306);
 define('CHUNK_SIZE', 100);
 
@@ -34,11 +34,14 @@ define('THROTTLE_MIN_INTERVAL', 500000);
 define('ENABLE_USER_AGENT_ROTATION', true);
 define('ENABLE_IP_SPOOFING', true);
 define('CACHE_ADAPTIVE_TTL', true);
-define('OFFLINE_FALLBACK_ENABLED', true);
 define('SMART_CACHE_PRELOAD', true);
 define('SUPPORTED_AUDIO_QUALITIES', ['320', '192', '128']);
 define('DEFAULT_AUDIO_QUALITY', '192');
 
+// ── Authentication Token ───────────────────────────────────
+define('API_TOKEN', 'change_me_to_a_secure_token');
+
+// ── Download Status Constants ─────────────────────────────
 define('DOWNLOAD_STATUS_PENDING', 'pending');
 define('DOWNLOAD_STATUS_DOWNLOADING', 'downloading');
 define('DOWNLOAD_STATUS_PAUSED', 'paused');
@@ -58,37 +61,12 @@ $userAgents = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0',
 ];
 
-// ── ID Helpers ─────────────────────────────────────────────
-function normalizeId($id): string {
-    if (is_numeric($id) || (is_string($id) && ctype_digit($id))) return 'it_' . $id;
-    if (is_string($id) && strpos($id, 'it_') === 0) return $id;
-    return (string)$id;
-}
-function denormalizeId($id): string {
-    if (is_string($id) && strpos($id, 'it_') === 0) return substr($id, 3);
-    return (string)$id;
-}
-function normalizeIdsInArray(array &$data): void {
-    foreach (['artistId', 'collectionId', 'trackId'] as $key) {
-        if (isset($data[$key])) $data[$key] = normalizeId($data[$key]);
-    }
-}
-function denormalizeIdsInArray(array &$data): void {
-    foreach (['artistId', 'collectionId', 'trackId'] as $key) {
-        if (isset($data[$key])) $data[$key] = denormalizeId($data[$key]);
-    }
-}
-
-// ── Database & Statements (PDO) ───────────────────────────
-function getDB(): PDO {
+// ── Database & Statements ─────────────────────────────────
+function getDB(): PDO
+{
     global $db;
     if ($db === null) {
-        $dsn = sprintf(
-            'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
-            DEST_HOST,
-            DEST_PORT,
-            DEST_NAME
-        );
+        $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', DEST_HOST, DEST_PORT, DEST_NAME);
         $db = new PDO($dsn, DEST_USER, DEST_PASS, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -99,7 +77,8 @@ function getDB(): PDO {
     return $db;
 }
 
-function getStatement(string $sql): PDOStatement {
+function getStatement(string $sql): PDOStatement
+{
     global $statements;
     $hash = md5($sql);
     if (!isset($statements[$hash])) {
@@ -108,34 +87,68 @@ function getStatement(string $sql): PDOStatement {
     return $statements[$hash];
 }
 
-// ── Schema & Initialization (MySQL) ──────────────────────
-function initDatabase(PDO $db): void {
+// ── Schema & Initialization ────────────────────────────────
+function initDatabase(PDO $db): void
+{
     static $initialized = false;
     if ($initialized) return;
 
-    $db->exec("CREATE TABLE IF NOT EXISTS artists (
-        artistId VARCHAR(255) PRIMARY KEY
-    ) ENGINE=InnoDB");
+    // Migrate old download_queue
+    try {
+        if ($db->query("SHOW TABLES LIKE 'download_queue'")->fetch()) {
+            if (!$db->query("SHOW TABLES LIKE 'downloadQueue'")->fetch()) {
+                $db->exec("RENAME TABLE download_queue TO downloadQueue");
+            }
+        }
+    } catch (Exception $e) { /* ignore */ }
 
-    $db->exec("CREATE TABLE IF NOT EXISTS collections (
-        collectionId VARCHAR(255) PRIMARY KEY
-    ) ENGINE=InnoDB");
+    // Migrate entityMirrors: add id, unique key, source
+    try {
+        if ($db->query("SHOW TABLES LIKE 'entityMirrors'")->fetch()) {
+            if (!$db->query("SHOW COLUMNS FROM entityMirrors LIKE 'id'")->fetch()) {
+                $db->exec("ALTER TABLE entityMirrors ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST");
+                try { $db->exec("ALTER TABLE entityMirrors DROP PRIMARY KEY"); } catch (Exception $e) {}
+                $db->exec("ALTER TABLE entityMirrors ADD UNIQUE KEY unique_mirror (entityType, entityId, urlType, quality, mirrorUrl(255))");
+                try { $db->exec("ALTER TABLE entityMirrors ADD COLUMN source VARCHAR(50) DEFAULT 'custom'"); } catch (Exception $e) {}
+            } else {
+                try { $db->exec("ALTER TABLE entityMirrors ADD COLUMN source VARCHAR(50) DEFAULT 'custom'"); } catch (Exception $e) {}
+            }
+        } else {
+            $db->exec("CREATE TABLE entityMirrors (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                entityType VARCHAR(50) NOT NULL,
+                entityId VARCHAR(255) NOT NULL,
+                urlType VARCHAR(50) NOT NULL,
+                mirrorUrl TEXT NOT NULL,
+                quality VARCHAR(10),
+                source VARCHAR(50) DEFAULT 'custom',
+                updatedAt DATETIME,
+                UNIQUE KEY unique_mirror (entityType, entityId, urlType, quality, mirrorUrl(255))
+            ) ENGINE=InnoDB");
+        }
+    } catch (Exception $e) { /* ignore */ }
 
-    $db->exec("CREATE TABLE IF NOT EXISTS tracks (
+    // Core tables
+    $db->exec("CREATE TABLE IF NOT EXISTS artists (artistId VARCHAR(255) PRIMARY KEY) ENGINE=InnoDB");
+    $db->exec("CREATE TABLE IF NOT EXISTS collections (collectionId VARCHAR(255) PRIMARY KEY) ENGINE=InnoDB");
+    $db->exec("CREATE TABLE IF NOT EXISTS tracks (trackId VARCHAR(255) PRIMARY KEY, isStreamable TINYINT(1) DEFAULT 0) ENGINE=InnoDB");
+    $db->exec("CREATE TABLE IF NOT EXISTS trackLyrics (
         trackId VARCHAR(255) PRIMARY KEY,
-        lyrics TEXT
+        lyrics TEXT NOT NULL,
+        type ENUM('synced','unsynced') DEFAULT 'unsynced',
+        source VARCHAR(50) DEFAULT 'custom',
+        updatedAt DATETIME,
+        FOREIGN KEY (trackId) REFERENCES tracks(trackId) ON DELETE CASCADE
     ) ENGINE=InnoDB");
 
-    $db->exec("CREATE TABLE IF NOT EXISTS entityMirrors (
-        entityType VARCHAR(50) NOT NULL,
-        entityId VARCHAR(255) NOT NULL,
-        urlType VARCHAR(50) NOT NULL,
-        mirrorUrl TEXT NOT NULL,
-        quality VARCHAR(10),
-        platform VARCHAR(50) NOT NULL DEFAULT 'telegram',
-        updatedAt DATETIME,
-        PRIMARY KEY (entityType, entityId, urlType, quality, platform)
-    ) ENGINE=InnoDB");
+    // Migrate old lyrics
+    try {
+        if ($db->query("SHOW COLUMNS FROM tracks LIKE 'lyrics'")->fetch()) {
+            $db->exec("INSERT IGNORE INTO trackLyrics (trackId, lyrics, type, source, updatedAt)
+                       SELECT trackId, lyrics, 'unsynced', 'custom', NOW() FROM tracks WHERE lyrics IS NOT NULL AND lyrics != ''");
+            $db->exec("ALTER TABLE tracks DROP COLUMN lyrics");
+        }
+    } catch (Exception $e) { /* ignore */ }
 
     $db->exec("CREATE TABLE IF NOT EXISTS requestCache (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -180,80 +193,75 @@ function initDatabase(PDO $db): void {
         responseTimeAvg DECIMAL(10,2) DEFAULT 0
     ) ENGINE=InnoDB");
 
-    $db->exec("CREATE TABLE IF NOT EXISTS offlineCache (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        entityType VARCHAR(50) NOT NULL,
-        entityId VARCHAR(255) NOT NULL,
-        data TEXT NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        expiresAt DATETIME,
-        UNIQUE KEY (entityType, entityId)
-    ) ENGINE=InnoDB");
-
-    $db->exec("CREATE TABLE IF NOT EXISTS download_queue (
+    $db->exec("CREATE TABLE IF NOT EXISTS downloadQueue (
         id INT AUTO_INCREMENT PRIMARY KEY,
         trackId VARCHAR(255) NOT NULL,
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
         filePath TEXT,
         quality VARCHAR(10),
-        platform VARCHAR(50) DEFAULT 'telegram',
         addedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         startedAt DATETIME,
         completedAt DATETIME,
         errorMessage TEXT,
         retryCount INT DEFAULT 0,
         priority INT DEFAULT 0,
+        percent INT DEFAULT 0,
         FOREIGN KEY (trackId) REFERENCES tracks(trackId) ON DELETE CASCADE
     ) ENGINE=InnoDB");
 
-    $db->exec("CREATE INDEX IF NOT EXISTS idx_download_status ON download_queue(status)");
-    $db->exec("CREATE INDEX IF NOT EXISTS idx_download_track ON download_queue(trackId)");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_download_status ON downloadQueue(status)");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_download_track ON downloadQueue(trackId)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_mirrors_lookup ON entityMirrors(entityType, entityId)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_cache_lookup ON requestCache(endpoint, params(255))");
-    $db->exec("CREATE INDEX IF NOT EXISTS idx_offline_entity ON offlineCache(entityType, entityId)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_request_history ON requestHistory(requestTime)");
+
+    // Add missing columns
+    try {
+        if (!$db->query("SHOW COLUMNS FROM tracks LIKE 'isStreamable'")->fetch()) {
+            $db->exec("ALTER TABLE tracks ADD COLUMN isStreamable TINYINT(1) DEFAULT 0");
+        }
+        if (!$db->query("SHOW COLUMNS FROM downloadQueue LIKE 'percent'")->fetch()) {
+            $db->exec("ALTER TABLE downloadQueue ADD COLUMN percent INT DEFAULT 0");
+        }
+    } catch (Exception $e) { /* ignore */ }
 
     $initialized = true;
 }
 
-// ── Dynamic Column Addition (MySQL) ───────────────────────
-function ensureColumns(PDO $db, string $table, array $data): void {
+// ── Dynamic Column Addition ────────────────────────────────
+function ensureColumns(PDO $db, string $table, array $data): void
+{
     static $existingColumns = [];
     $allowedTables = ['artists', 'collections', 'tracks'];
     if (!in_array($table, $allowedTables)) return;
 
     if (!isset($existingColumns[$table])) {
-        $stmt = $db->query("SHOW COLUMNS FROM $table");
-        $cols = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $cols[$row['Field']] = true;
-        }
-        $existingColumns[$table] = $cols;
+        $cols = $db->query("SHOW COLUMNS FROM $table")->fetchAll(PDO::FETCH_COLUMN, 0);
+        $existingColumns[$table] = array_flip($cols);
     }
 
     foreach ($data as $col => $value) {
-        if (!isset($existingColumns[$table][$col])) {
-            if (preg_match('/^[a-zA-Z0-9_]+$/', $col)) {
-                $db->exec("ALTER TABLE $table ADD COLUMN `$col` TEXT DEFAULT NULL");
-                $existingColumns[$table][$col] = true;
-                error_log("Added column `$col` to table $table");
-            }
+        if (!isset($existingColumns[$table][$col]) && preg_match('/^[a-zA-Z0-9_]+$/', $col)) {
+            $db->exec("ALTER TABLE $table ADD COLUMN `$col` TEXT DEFAULT NULL");
+            $existingColumns[$table][$col] = true;
+            error_log("Added column `$col` to table $table");
         }
     }
 }
 
-// ── Data Preservation when Saving from iTunes ─────────────
-function saveEntitiesFromApi(PDO $db, string $table, array $entities): void {
+// ── Entity Saving ───────────────────────────────────────────
+function saveEntitiesFromApi(PDO $db, string $table, array $entities): void
+{
     if (empty($entities)) return;
     if (isset($entities['wrapperType']) || isset($entities['artistId']) || isset($entities['collectionId']) || isset($entities['trackId'])) {
         $entities = [$entities];
     }
 
     $expectedWrapper = match ($table) {
-        'artists'     => 'artist',
+        'artists' => 'artist',
         'collections' => 'collection',
-        'tracks'      => 'track',
-        default       => null,
+        'tracks' => 'track',
+        default => null,
     };
     if ($expectedWrapper === null) return;
 
@@ -262,30 +270,28 @@ function saveEntitiesFromApi(PDO $db, string $table, array $entities): void {
         if (!is_array($entity)) continue;
         if (isset($entity['wrapperType']) && $entity['wrapperType'] !== $expectedWrapper) continue;
 
-        normalizeIdsInArray($entity);
         $pkCol = match ($table) {
-            'artists'     => 'artistId',
+            'artists' => 'artistId',
             'collections' => 'collectionId',
-            'tracks'      => 'trackId',
-            default       => null,
+            'tracks' => 'trackId',
+            default => null,
         };
         if (!$pkCol || !isset($entity[$pkCol])) continue;
 
         ensureColumns($db, $table, $entity);
+        $id = $entity[$pkCol];
 
         $stmt = getStatement("SELECT 1 FROM $table WHERE $pkCol = :id");
-        $stmt->bindValue(':id', $entity[$pkCol]);
+        $stmt->bindValue(':id', $id);
         $stmt->execute();
-        $exists = $stmt->fetch() !== false;
+        $exists = $stmt->fetch();
 
         if (!$exists) {
             $columns = array_keys($entity);
             $placeholders = implode(',', array_map(fn($c) => ":$c", $columns));
-            $sql = "INSERT INTO $table (`" . implode('`,`', $columns) . "`) VALUES ($placeholders)";
-            $ins = $db->prepare($sql);
+            $ins = $db->prepare("INSERT INTO $table (`" . implode('`,`', $columns) . "`) VALUES ($placeholders)");
             foreach ($entity as $col => $val) {
-                $type = is_int($val) ? PDO::PARAM_INT : (is_float($val) ? PDO::PARAM_STR : PDO::PARAM_STR);
-                $ins->bindValue(":$col", $val, $type);
+                $ins->bindValue(":$col", $val, is_int($val) ? PDO::PARAM_INT : (is_float($val) ? PDO::PARAM_STR : PDO::PARAM_STR));
             }
             $ins->execute();
         } else {
@@ -296,137 +302,187 @@ function saveEntitiesFromApi(PDO $db, string $table, array $entities): void {
                 }
             }
             if (!empty($updates)) {
-                $sql = "UPDATE $table SET " . implode(',', $updates) . " WHERE $pkCol = :id";
-                $upd = $db->prepare($sql);
+                $upd = $db->prepare("UPDATE $table SET " . implode(',', $updates) . " WHERE $pkCol = :id");
                 foreach ($entity as $col => $val) {
                     if ($col !== $pkCol && $col !== 'lyrics') {
-                        $type = is_int($val) ? PDO::PARAM_INT : (is_float($val) ? PDO::PARAM_STR : PDO::PARAM_STR);
-                        $upd->bindValue(":$col", $val, $type);
+                        $upd->bindValue(":$col", $val, is_int($val) ? PDO::PARAM_INT : (is_float($val) ? PDO::PARAM_STR : PDO::PARAM_STR));
                     }
                 }
-                $upd->bindValue(':id', $entity[$pkCol]);
+                $upd->bindValue(':id', $id);
                 $upd->execute();
             }
         }
+
+        if ($table === 'tracks') updateStreamableStatus($db, $id);
     }
     $db->commit();
 }
 
-// ── Mirror Helpers (quality aware + platform grouping) ───
-function getAudioUrlTypeWithQuality(string $urlType, ?string $quality = null): string {
+// ── Mirror/Attachment Helpers ──────────────────────────────
+function getAudioUrlTypeWithQuality(string $urlType, ?string $quality = null): string
+{
     if ($urlType !== 'audioUrl' || !$quality) return $urlType;
     if (!in_array($quality, SUPPORTED_AUDIO_QUALITIES)) $quality = DEFAULT_AUDIO_QUALITY;
     return $urlType . '_' . $quality;
 }
-function extractQualityFromUrlType(string $urlType): ?string {
+
+function extractQualityFromUrlType(string $urlType): ?string
+{
     if (strpos($urlType, 'audioUrl_') === 0) {
         $qual = substr($urlType, 9);
         return in_array($qual, SUPPORTED_AUDIO_QUALITIES) ? $qual : null;
     }
     return null;
 }
-function getBestAvailableQuality(array $mirrors): ?array {
+
+function getBestAvailableQuality(array $mirrors): ?array
+{
     foreach (SUPPORTED_AUDIO_QUALITIES as $qual) {
         $key = 'audioUrl_' . $qual;
-        if (isset($mirrors[$key]['url'])) return ['url' => $mirrors[$key]['url'], 'quality' => $qual];
+        if (isset($mirrors[$key]) && !empty($mirrors[$key])) {
+            return ['url' => $mirrors[$key][0]['url'], 'quality' => $qual];
+        }
     }
-    if (isset($mirrors['audioUrl']['url'])) return ['url' => $mirrors['audioUrl']['url'], 'quality' => $mirrors['audioUrl']['quality'] ?? DEFAULT_AUDIO_QUALITY];
+    if (isset($mirrors['audioUrl']) && !empty($mirrors['audioUrl'])) {
+        return ['url' => $mirrors['audioUrl'][0]['url'], 'quality' => $mirrors['audioUrl'][0]['quality'] ?? DEFAULT_AUDIO_QUALITY];
+    }
     return null;
 }
 
-/**
- * Attach mirrors to an entity. If platform is 'all', attaches all platforms under 'allMirrors'.
- * Otherwise, attaches only the specified platform under 'mirrorUrls'.
- */
-function attachMirrors(array &$entity, string $type, string $id, ?string $requestedQuality = null, string $platform = 'telegram'): void {
+function attachAttachments(array &$entity, string $type, string $id, ?string $requestedQuality = null): void
+{
     $db = getDB();
-    $id = normalizeId($id);
 
-    if ($platform === 'all') {
-        // Fetch all platforms and group by platform
-        $stmt = getStatement("SELECT urlType, mirrorUrl, quality, platform FROM entityMirrors WHERE entityType=:t AND entityId=:id");
-        $stmt->bindValue(':t', $type);
-        $stmt->bindValue(':id', $id);
-        $stmt->execute();
-        $allMirrors = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $p = $row['platform'];
-            if (!isset($allMirrors[$p])) $allMirrors[$p] = [];
-            $urlType = $row['urlType'];
-            $mirrorData = ['url' => $row['mirrorUrl']];
-            if ($row['quality']) $mirrorData['quality'] = $row['quality'];
-            $allMirrors[$p][$urlType] = $mirrorData;
+    // Collect iTunes artwork URLs
+    $artworkUrls = [];
+    foreach ($entity as $key => $value) {
+        if (strpos($key, 'artworkUrl') === 0 && $key !== 'artworkUrl' && !is_null($value)) {
+            $size = substr($key, strlen('artworkUrl'));
+            if (is_numeric($size)) {
+                $size = $size . 'x' . $size;
+                $artworkUrls[] = ['size' => $size, 'url' => $value, 'source' => 'itunes'];
+            }
         }
-        // Also add best audio for each platform?
-        $entity['allMirrors'] = $allMirrors;
-        // Keep mirrorUrls for backward compatibility (using first platform or default 'telegram')
-        $defaultPlatform = 'telegram';
-        if (isset($allMirrors[$defaultPlatform])) {
-            $mirrors = $allMirrors[$defaultPlatform];
-        } else if (!empty($allMirrors)) {
-            $mirrors = reset($allMirrors);
-        } else {
-            $mirrors = [];
+    }
+    if (isset($entity['artworkUrl']) && !empty($entity['artworkUrl'])) {
+        $found = false;
+        foreach ($artworkUrls as $a) {
+            if ($a['url'] === $entity['artworkUrl']) { $found = true; break; }
         }
-        // Build mirrorUrls from default platform (for backward compat)
-        $entity['mirrorUrls'] = [];
-        if (isset($mirrors['artworkUrl'])) $entity['mirrorUrls']['artworkUrl'] = ['url' => $mirrors['artworkUrl']['url']];
-        if (isset($mirrors['previewUrl'])) $entity['mirrorUrls']['previewUrl'] = ['url' => $mirrors['previewUrl']['url']];
-        $best = getBestAvailableQuality($mirrors);
-        if ($best) $entity['mirrorUrls']['audioUrl'] = $best;
-        return;
+        if (!$found) {
+            $artworkUrls[] = ['size' => 'original', 'url' => $entity['artworkUrl'], 'source' => 'itunes'];
+        }
     }
 
-    // Single platform (original behavior)
-    $stmt = getStatement("SELECT urlType, mirrorUrl, quality FROM entityMirrors WHERE entityType=:t AND entityId=:id AND platform=:p");
+    // Fetch mirrors from DB
+    $stmt = getStatement("SELECT id, urlType, mirrorUrl, quality, source FROM entityMirrors WHERE entityType=:t AND entityId=:id");
     $stmt->bindValue(':t', $type);
     $stmt->bindValue(':id', $id);
-    $stmt->bindValue(':p', $platform);
     $stmt->execute();
     $mirrors = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $urlType = $row['urlType'];
-        $mirrorData = ['url' => $row['mirrorUrl']];
-        $qual = extractQualityFromUrlType($urlType);
-        if ($qual) $mirrorData['quality'] = $qual;
-        elseif ($row['quality']) $mirrorData['quality'] = $row['quality'];
-        $mirrors[$urlType] = $mirrorData;
+    while ($row = $stmt->fetch()) {
+        $ut = $row['urlType'];
+        if (!isset($mirrors[$ut])) $mirrors[$ut] = [];
+        $mirrors[$ut][] = [
+            'id' => $row['id'],
+            'url' => $row['mirrorUrl'],
+            'quality' => $row['quality'],
+            'source' => $row['source'] ?? 'custom'
+        ];
     }
 
-    $artworkMirror = null;
-    if ($type === 'track' && !empty($entity['collectionId'])) {
-        $collectionId = normalizeId($entity['collectionId']);
-        $stmtColl = getStatement("SELECT mirrorUrl FROM entityMirrors WHERE entityType='collection' AND entityId=:cid AND urlType='artworkUrl' AND platform=:p LIMIT 1");
-        $stmtColl->bindValue(':cid', $collectionId);
-        $stmtColl->bindValue(':p', $platform);
-        $stmtColl->execute();
-        $collRow = $stmtColl->fetch(PDO::FETCH_ASSOC);
-        if ($collRow && !empty($collRow['mirrorUrl'])) {
-            $artworkMirror = $collRow['mirrorUrl'];
+    // Build attachments per type
+    $attachments = [];
+
+    // Artwork
+    $artworkFromMirrors = array_map(fn($m) => ['size' => 'mirror', 'url' => $m['url'], 'source' => $m['source']], $mirrors['artworkUrl'] ?? []);
+    $attachments['artworkUrls'] = array_merge($artworkUrls, $artworkFromMirrors);
+
+    if ($type === 'artist') {
+        $attachments['bannerUrls'] = array_map(fn($m) => ['url' => $m['url'], 'source' => $m['source']], $mirrors['bannerUrl'] ?? []);
+        $attachments['previewUrls'] = null;
+        $attachments['audioUrls'] = null;
+        $attachments['lyrics'] = null;
+    } elseif ($type === 'collection') {
+        $attachments['previewUrls'] = null;
+        $attachments['audioUrls'] = null;
+        $attachments['lyrics'] = null;
+    } else { // track
+        $previewUrls = [];
+        if (isset($entity['previewUrl']) && !empty($entity['previewUrl'])) {
+            $previewUrls[] = ['url' => $entity['previewUrl'], 'source' => 'itunes'];
+        }
+        foreach ($mirrors['previewUrl'] ?? [] as $m) {
+            $previewUrls[] = ['url' => $m['url'], 'source' => $m['source']];
+        }
+        $attachments['previewUrls'] = $previewUrls;
+
+        $audioUrls = [];
+        foreach ($mirrors as $urlType => $items) {
+            if (strpos($urlType, 'audioUrl') === 0) {
+                foreach ($items as $item) {
+                    $quality = $item['quality'] ?? null;
+                    if (!$quality && $urlType !== 'audioUrl') {
+                        $quality = extractQualityFromUrlType($urlType);
+                    }
+                    $audioUrls[] = [
+                        'quality' => $quality ?: 'unknown',
+                        'url' => $item['url'],
+                        'source' => $item['source']
+                    ];
+                }
+            }
+        }
+        $attachments['audioUrls'] = $audioUrls;
+
+        // Lyrics
+        $lyricsData = getLyrics($db, $id);
+        $attachments['lyrics'] = $lyricsData['success'] ? [
+            'type' => $lyricsData['type'],
+            'text' => $lyricsData['lyrics'],
+            'source' => $lyricsData['source'] ?? 'custom'
+        ] : null;
+    }
+
+    $entity['attachments'] = $attachments;
+
+    // Remove top-level URL fields
+    unset($entity['artworkUrl'], $entity['previewUrl'], $entity['audioUrl']);
+    foreach (array_keys($entity) as $key) {
+        if (strpos($key, 'artworkUrl') === 0 || strpos($key, 'previewUrl') === 0) {
+            unset($entity[$key]);
         }
     }
-    if (!$artworkMirror && isset($mirrors['artworkUrl'])) {
-        $artworkMirror = $mirrors['artworkUrl']['url'];
-    }
-    $mirrorUrls['artworkUrl'] = $artworkMirror ? ['url' => $artworkMirror] : null;
 
-    $previewMirror = isset($mirrors['previewUrl']) ? $mirrors['previewUrl']['url'] : null;
-    $mirrorUrls['previewUrl'] = $previewMirror ? ['url' => $previewMirror] : null;
-
-    if ($requestedQuality && in_array($requestedQuality, SUPPORTED_AUDIO_QUALITIES)) {
-        $specific = $mirrors['audioUrl_' . $requestedQuality] ?? null;
-        $mirrorUrls['audioUrl'] = $specific ?? getBestAvailableQuality($mirrors);
-    } else {
-        $mirrorUrls['audioUrl'] = getBestAvailableQuality($mirrors);
+    // Ensure isStreamable is integer
+    if (isset($entity['isStreamable'])) {
+        $entity['isStreamable'] = (int)$entity['isStreamable'];
     }
 
-    $entity['mirrorUrls'] = $mirrorUrls ?: new stdClass();
+    if ($type === 'track') updateStreamableStatus($db, $id);
 }
 
-function setMirrorUrl(PDO $db, string $type, string $id, string $urlType, string $mirrorUrl, ?string $quality = null, string $platform = 'telegram'): array {
-    if (!in_array($urlType, ['artworkUrl','previewUrl','audioUrl'])) return ['success'=>false, 'error'=>'Invalid urlType'];
-    if (!filter_var($mirrorUrl, FILTER_VALIDATE_URL) && strpos($mirrorUrl, 'tg://') !== 0) return ['success'=>false, 'error'=>'Invalid URL'];
-    $id = normalizeId($id);
+function updateStreamableStatus(PDO $db, string $trackId): void
+{
+    $stmt = getStatement("SELECT 1 FROM entityMirrors WHERE entityType='track' AND entityId=:id AND urlType LIKE 'audioUrl%' LIMIT 1");
+    $stmt->bindValue(':id', $trackId);
+    $stmt->execute();
+    $hasAudio = (bool)$stmt->fetch();
+    $stmt2 = getStatement("UPDATE tracks SET isStreamable = :streamable WHERE trackId = :id");
+    $stmt2->bindValue(':streamable', $hasAudio ? 1 : 0, PDO::PARAM_INT);
+    $stmt2->bindValue(':id', $trackId);
+    $stmt2->execute();
+}
+
+// ── Mirror CRUD ────────────────────────────────────────────
+function addMirrorUrl(PDO $db, string $type, string $id, string $urlType, string $mirrorUrl, ?string $quality = null, string $source = 'custom'): array
+{
+    if (!in_array($urlType, ['artworkUrl', 'previewUrl', 'audioUrl', 'bannerUrl'])) {
+        return ['success' => false, 'error' => 'Invalid urlType'];
+    }
+    if (!filter_var($mirrorUrl, FILTER_VALIDATE_URL) && strpos($mirrorUrl, 'tg://') !== 0) {
+        return ['success' => false, 'error' => 'Invalid URL'];
+    }
 
     $table = match ($type) {
         'artist' => 'artists',
@@ -441,156 +497,144 @@ function setMirrorUrl(PDO $db, string $type, string $id, string $urlType, string
 
     $actualUrlType = getAudioUrlTypeWithQuality($urlType, $quality);
     $qualityVal = ($urlType === 'audioUrl') ? $quality : null;
-    $stmt = getStatement("REPLACE INTO entityMirrors (entityType, entityId, urlType, mirrorUrl, quality, platform, updatedAt) VALUES (:t,:id,:ut,:url,:q,:p, NOW())");
+
+    $stmt = getStatement("INSERT IGNORE INTO entityMirrors (entityType, entityId, urlType, mirrorUrl, quality, source, updatedAt) 
+                          VALUES (:t, :id, :ut, :url, :q, :src, NOW())");
     $stmt->bindValue(':t', $type);
     $stmt->bindValue(':id', $id);
     $stmt->bindValue(':ut', $actualUrlType);
     $stmt->bindValue(':url', $mirrorUrl);
     $stmt->bindValue(':q', $qualityVal);
-    $stmt->bindValue(':p', $platform);
+    $stmt->bindValue(':src', $source);
     $stmt->execute();
-    return ['success'=>true, 'message'=>"Mirror $urlType set" . ($quality ? " for quality $quality" : "") . " on $platform"];
+
+    if ($stmt->rowCount()) {
+        $newId = $db->lastInsertId();
+        if ($type === 'track') updateStreamableStatus($db, $id);
+        return ['success' => true, 'id' => $newId, 'message' => 'Mirror added'];
+    }
+    return ['success' => false, 'error' => 'Duplicate mirror already exists'];
 }
 
-/**
- * Get mirror URLs. If $platform is 'all', returns all platforms grouped.
- * Otherwise returns only the specified platform.
- */
-function getMirrorUrls(PDO $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, string $platform = 'telegram'): array {
-    $id = normalizeId($id);
-    $sql = "SELECT urlType, mirrorUrl, quality, platform FROM entityMirrors 
-            WHERE entityType = :t AND entityId = :id";
-    $params = [':t' => $type, ':id' => $id];
-    if ($platform !== 'all') {
-        $sql .= " AND platform = :p";
-        $params[':p'] = $platform;
-    }
-    $stmt = getStatement($sql);
-    foreach ($params as $k => $v) {
-        $stmt->bindValue($k, $v);
-    }
-    $stmt->execute();
-    $mirrors = [];
-    $allPlatforms = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $p = $row['platform'];
-        if (!isset($allPlatforms[$p])) $allPlatforms[$p] = [];
-        $rowType = $row['urlType'];
-        if ($urlType && $quality && $rowType !== getAudioUrlTypeWithQuality($urlType, $quality)) {
+function addMirrorUrlsBatch(PDO $db, array $attachments): array
+{
+    $results = [];
+    foreach ($attachments as $item) {
+        if (!isset($item['entityType'], $item['entityId'], $item['urlType'], $item['mirrorUrl'])) {
+            $results[] = ['success' => false, 'error' => 'Missing required fields', 'item' => $item];
             continue;
         }
-        $allPlatforms[$p][$rowType] = ['url' => $row['mirrorUrl']];
-        if ($row['quality']) {
-            $allPlatforms[$p][$rowType]['quality'] = $row['quality'];
-        }
-        // Also keep flat for backward compatibility (if platform is specific)
-        if ($platform !== 'all' || $p === $platform) {
-            $mirrors[$rowType] = ['url' => $row['mirrorUrl']];
-            if ($row['quality']) {
-                $mirrors[$rowType]['quality'] = $row['quality'];
-            }
-        }
+        $res = addMirrorUrl($db, $item['entityType'], $item['entityId'], $item['urlType'], $item['mirrorUrl'], $item['quality'] ?? null, $item['source'] ?? 'custom');
+        $results[] = array_merge($res, ['entity' => $item['entityId']]);
     }
-
-    // Build response
-    $mirrorUrls = [];
-    $artworkMirror = null;
-    if ($type === 'track' && !empty($id)) {
-        $collectionId = null;
-        $trackStmt = getStatement("SELECT collectionId FROM tracks WHERE trackId = :id");
-        $trackStmt->bindValue(':id', $id);
-        $trackStmt->execute();
-        $trackRow = $trackStmt->fetch(PDO::FETCH_ASSOC);
-        if ($trackRow && !empty($trackRow['collectionId'])) {
-            $collectionId = $trackRow['collectionId'];
-            $collStmt = getStatement("SELECT mirrorUrl FROM entityMirrors 
-                                      WHERE entityType = 'collection' AND entityId = :cid 
-                                      AND urlType = 'artworkUrl'");
-            if ($platform !== 'all') {
-                $collStmt = getStatement($collStmt->queryString . " AND platform = :p LIMIT 1");
-                $collStmt->bindValue(':p', $platform);
-            } else {
-                $collStmt = getStatement($collStmt->queryString . " LIMIT 1");
-            }
-            $collStmt->bindValue(':cid', $collectionId);
-            $collStmt->execute();
-            $collRow = $collStmt->fetch(PDO::FETCH_ASSOC);
-            if ($collRow && !empty($collRow['mirrorUrl'])) {
-                $artworkMirror = $collRow['mirrorUrl'];
-            }
-        }
-    }
-    if (!$artworkMirror && isset($mirrors['artworkUrl'])) {
-        $artworkMirror = $mirrors['artworkUrl']['url'];
-    }
-    $mirrorUrls['artworkUrl'] = $artworkMirror ? ['url' => $artworkMirror] : null;
-    $previewMirror = isset($mirrors['previewUrl']) ? $mirrors['previewUrl']['url'] : null;
-    $mirrorUrls['previewUrl'] = $previewMirror ? ['url' => $previewMirror] : null;
-    $bestAudio = getBestAvailableQuality($mirrors);
-    $mirrorUrls['audioUrl'] = $bestAudio;
-
-    return [
-        'success' => true,
-        'entityType' => $type,
-        'entityId' => denormalizeId($id),
-        'platform' => $platform,
-        'mirrorUrls' => $mirrorUrls,
-        'allPlatforms' => $allPlatforms, // optional, for UI
-    ];
+    return ['success' => true, 'results' => $results];
 }
 
-function deleteMirrorUrl(PDO $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, string $platform = 'telegram'): array {
-    $id = normalizeId($id);
-    if ($urlType) {
-        $actual = getAudioUrlTypeWithQuality($urlType, $quality);
-        $stmt = getStatement("DELETE FROM entityMirrors WHERE entityType=:t AND entityId=:id AND urlType=:ut AND platform=:p");
-        $stmt->bindValue(':ut', $actual);
+function getMirrorUrls(PDO $db, string $type, string $id, ?string $urlType = null, ?string $quality = null): array
+{
+    $sql = "SELECT id, urlType, mirrorUrl, quality, source FROM entityMirrors WHERE entityType = :t AND entityId = :id";
+    $params = [':t' => $type, ':id' => $id];
+    $stmt = getStatement($sql);
+    foreach ($params as $k => $v) $stmt->bindValue($k, $v);
+    $stmt->execute();
+
+    $attachments = ['artworkUrls' => []];
+    if ($type === 'artist') $attachments['bannerUrls'] = [];
+    if ($type === 'track') {
+        $attachments['previewUrls'] = [];
+        $attachments['audioUrls'] = [];
+        $attachments['lyrics'] = null;
     } else {
-        $stmt = getStatement("DELETE FROM entityMirrors WHERE entityType=:t AND entityId=:id AND platform=:p");
+        $attachments['previewUrls'] = null;
+        $attachments['audioUrls'] = null;
+        $attachments['lyrics'] = null;
     }
-    $stmt->bindValue(':t', $type);
-    $stmt->bindValue(':id', $id);
-    $stmt->bindValue(':p', $platform);
-    $stmt->execute();
-    return ['success'=>true, 'message'=>($urlType ? "Mirror '$urlType' deleted" : 'All mirrors deleted')];
+
+    while ($row = $stmt->fetch()) {
+        $rowType = $row['urlType'];
+        if ($urlType && $quality && $rowType !== getAudioUrlTypeWithQuality($urlType, $quality)) continue;
+
+        $item = ['id' => $row['id'], 'url' => $row['mirrorUrl'], 'source' => $row['source'] ?? 'custom'];
+        if ($row['quality']) $item['quality'] = $row['quality'];
+
+        if (strpos($rowType, 'audioUrl') === 0 && $type === 'track') {
+            $qual = $row['quality'] ?? null;
+            if (!$qual && $rowType !== 'audioUrl') $qual = extractQualityFromUrlType($rowType);
+            $item['quality'] = $qual ?: 'unknown';
+            $attachments['audioUrls'][] = $item;
+        } elseif ($rowType === 'artworkUrl') {
+            $attachments['artworkUrls'][] = ['size' => 'mirror', 'url' => $row['mirrorUrl'], 'source' => $item['source']];
+        } elseif ($rowType === 'previewUrl' && $type === 'track') {
+            $attachments['previewUrls'][] = ['url' => $row['mirrorUrl'], 'source' => $item['source']];
+        } elseif ($rowType === 'bannerUrl' && $type === 'artist') {
+            $attachments['bannerUrls'][] = ['url' => $row['mirrorUrl'], 'source' => $item['source']];
+        }
+    }
+
+    return ['success' => true, 'entityType' => $type, 'entityId' => $id, 'attachments' => $attachments];
 }
 
-// ── Lyrics ────────────────────────────────────────────────
-function getLyrics(PDO $db, string $trackId): array {
-    $trackId = normalizeId($trackId);
-    $stmt = getStatement("SELECT lyrics FROM tracks WHERE trackId = :id");
+function deleteMirrorUrl(PDO $db, string $type, string $id, ?string $urlType = null, ?string $quality = null, ?int $mirrorId = null): array
+{
+    if ($mirrorId !== null) {
+        $stmt = getStatement("DELETE FROM entityMirrors WHERE id = :mid AND entityType = :t AND entityId = :id");
+        $stmt->bindValue(':mid', $mirrorId, PDO::PARAM_INT);
+        $stmt->bindValue(':t', $type);
+        $stmt->bindValue(':id', $id);
+    } else {
+        if ($urlType) {
+            $actual = getAudioUrlTypeWithQuality($urlType, $quality);
+            $stmt = getStatement("DELETE FROM entityMirrors WHERE entityType=:t AND entityId=:id AND urlType=:ut");
+            $stmt->bindValue(':ut', $actual);
+        } else {
+            $stmt = getStatement("DELETE FROM entityMirrors WHERE entityType=:t AND entityId=:id");
+        }
+        $stmt->bindValue(':t', $type);
+        $stmt->bindValue(':id', $id);
+    }
+    $stmt->execute();
+    $deleted = $stmt->rowCount();
+    if ($type === 'track') updateStreamableStatus($db, $id);
+    return ['success' => true, 'deleted_count' => $deleted];
+}
+
+// ── Lyrics ──────────────────────────────────────────────────
+function getLyrics(PDO $db, string $trackId): array
+{
+    $stmt = getStatement("SELECT lyrics, type, source FROM trackLyrics WHERE trackId = :id");
     $stmt->bindValue(':id', $trackId);
     $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($row && !empty($row['lyrics'])) return ['success'=>true, 'trackId'=>denormalizeId($trackId), 'lyrics'=>json_decode($row['lyrics'], true)];
-    return ['success'=>false, 'error'=>'Lyrics not found'];
+    $row = $stmt->fetch();
+    if ($row && !empty($row['lyrics'])) {
+        return [
+            'success' => true,
+            'trackId' => $trackId,
+            'lyrics' => json_decode($row['lyrics'], true),
+            'type' => $row['type'],
+            'source' => $row['source'] ?? 'custom'
+        ];
+    }
+    return ['success' => false, 'error' => 'Lyrics not found'];
 }
-function saveLyrics(PDO $db, string $trackId, $lyrics): array {
-    $trackId = normalizeId($trackId);
+
+function saveLyrics(PDO $db, string $trackId, $lyrics, string $type = 'unsynced', string $source = 'custom'): array
+{
     $lyricsJson = is_string($lyrics) ? $lyrics : json_encode($lyrics);
-    if (json_decode($lyricsJson) === null) return ['success'=>false, 'error'=>'Invalid JSON'];
-    $stmt = getStatement("INSERT IGNORE INTO tracks (trackId) VALUES (:id)");
+    if (json_decode($lyricsJson) === null) return ['success' => false, 'error' => 'Invalid JSON'];
+    $db->exec("INSERT IGNORE INTO tracks (trackId) VALUES ('" . addslashes($trackId) . "')");
+    $stmt = getStatement("REPLACE INTO trackLyrics (trackId, lyrics, type, source, updatedAt) VALUES (:id, :lyrics, :type, :src, NOW())");
     $stmt->bindValue(':id', $trackId);
-    $stmt->execute();
-    $stmt = getStatement("UPDATE tracks SET lyrics = :lyrics WHERE trackId = :id");
     $stmt->bindValue(':lyrics', $lyricsJson);
-    $stmt->bindValue(':id', $trackId);
+    $stmt->bindValue(':type', $type);
+    $stmt->bindValue(':src', $source);
     $stmt->execute();
-    return ['success'=>true, 'message'=>'Lyrics saved'];
+    return ['success' => true, 'message' => 'Lyrics saved'];
 }
 
-/**
- * Fetch lyrics from LRCLIB based on track metadata.
- * Returns the full API response as a JSON string, or null on failure.
- */
-function fetchLyricsFromLrclib(string $trackName, string $artistName, ?string $albumName = null): ?string {
-    $params = [
-        'track_name' => $trackName,
-        'artist_name' => $artistName,
-    ];
-    if ($albumName) {
-        $params['album_name'] = $albumName;
-    }
+function fetchLyricsFromLrclib(string $trackName, string $artistName, ?string $albumName = null): ?array
+{
+    $params = ['track_name' => $trackName, 'artist_name' => $artistName];
+    if ($albumName) $params['album_name'] = $albumName;
     $url = 'https://lrclib.net/api/get?' . http_build_query($params);
     $ch = curl_init();
     curl_setopt_array($ch, [
@@ -606,16 +650,16 @@ function fetchLyricsFromLrclib(string $trackName, string $artistName, ?string $a
     if ($httpCode === 200 && $response) {
         $data = json_decode($response, true);
         if ($data) {
-            // Store the complete response to preserve all lyric fields
-            return json_encode($data);
+            $type = !empty($data['syncedLyrics']) ? 'synced' : 'unsynced';
+            return ['data' => $data, 'type' => $type, 'source' => 'lrclib'];
         }
     }
     return null;
 }
 
-// ── Fetch single entity ───────────────────────────────────
-function fetchEntityById(PDO $db, string $type, string $id, ?string $quality = null, string $platform = 'telegram'): ?array {
-    $id = normalizeId($id);
+// ── Fetch single entity ────────────────────────────────────
+function fetchEntityById(PDO $db, string $type, string $id, ?string $quality = null): ?array
+{
     $table = match ($type) {
         'artist' => 'artists',
         'collection' => 'collections',
@@ -627,28 +671,21 @@ function fetchEntityById(PDO $db, string $type, string $id, ?string $quality = n
     $stmt = getStatement("SELECT * FROM $table WHERE $pk = :id");
     $stmt->bindValue(':id', $id);
     $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $row = $stmt->fetch();
     if ($row) {
-        attachMirrors($row, $type, $id, $quality, $platform);
-        if ($type === 'track') {
-            $lyricsData = getLyrics($db, $id);
-            if ($lyricsData['success']) {
-                $row['lyrics'] = $lyricsData['lyrics'];
-            } else {
-                $row['lyrics'] = null;
-            }
-        }
+        attachAttachments($row, $type, $id, $quality);
         return $row;
     }
     return null;
 }
 
-// ── Caching ───────────────────────────────────────────────
-function getAdaptiveTTL(): int {
+// ── Caching ─────────────────────────────────────────────────
+function getAdaptiveTTL(): int
+{
     $db = getDB();
     $stmt = getStatement("SELECT successfulRequests, failedRequests FROM rateLimitLog WHERE apiName='itunes' LIMIT 1");
     $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $row = $stmt->fetch();
     $base = CACHE_DURATION;
     if ($row) {
         $total = $row['successfulRequests'] + $row['failedRequests'];
@@ -664,16 +701,20 @@ function getAdaptiveTTL(): int {
     elseif ($hour >= 18 && $hour <= 23) $base = (int)($base * 1.3);
     return $base;
 }
-function extractResultIds(array $results): string {
+
+function extractResultIds(array $results): string
+{
     $ids = [];
     foreach ($results as $item) {
         if (isset($item['wrapperType']) && isset($item[$item['wrapperType'] . 'Id'])) {
-            $ids[] = ['type'=>$item['wrapperType'], 'id'=>normalizeId($item[$item['wrapperType'] . 'Id'])];
+            $ids[] = ['type' => $item['wrapperType'], 'id' => $item[$item['wrapperType'] . 'Id']];
         }
     }
     return json_encode($ids);
 }
-function saveCacheIds(PDO $db, string $endpoint, array $params, array $results): void {
+
+function saveCacheIds(PDO $db, string $endpoint, array $params, array $results): void
+{
     $idsJson = extractResultIds($results);
     if ($idsJson === '[]') return;
     $paramsJson = json_encode($params);
@@ -686,13 +727,15 @@ function saveCacheIds(PDO $db, string $endpoint, array $params, array $results):
     $stmt->bindValue(':ex', $expires);
     $stmt->execute();
 }
-function getCachedResults(PDO $db, string $endpoint, array $params): ?array {
+
+function getCachedResults(PDO $db, string $endpoint, array $params): ?array
+{
     $paramsJson = json_encode($params);
     $stmt = getStatement("SELECT resultIds, expiresAt FROM requestCache WHERE endpoint=:ep AND params=:p AND expiresAt > NOW() LIMIT 1");
     $stmt->bindValue(':ep', $endpoint);
     $stmt->bindValue(':p', $paramsJson);
     $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $row = $stmt->fetch();
     if (!$row) return null;
     $stmt = getStatement("UPDATE requestCache SET accessCount = accessCount + 1, lastAccessed = NOW() WHERE endpoint=:ep AND params=:p");
     $stmt->bindValue(':ep', $endpoint);
@@ -702,54 +745,31 @@ function getCachedResults(PDO $db, string $endpoint, array $params): ?array {
     if (!$ids) return null;
     $results = [];
     foreach ($ids as $entry) {
-        $quality = $params['quality'] ?? null;
-        $platform = $params['platform'] ?? 'telegram';
-        $entity = fetchEntityById($db, $entry['type'], $entry['id'], $quality, $platform);
+        $entity = fetchEntityById($db, $entry['type'], $entry['id'], $params['quality'] ?? null);
         if ($entity) $results[] = $entity;
     }
-    return ['resultCount'=>count($results), 'results'=>$results];
+    return ['resultCount' => count($results), 'results' => $results];
 }
-function cleanExpiredCache(PDO $db): void {
+
+function cleanExpiredCache(PDO $db): void
+{
     $now = time();
     $stmt = getStatement("SELECT lastRequestTime FROM rateLimitLog WHERE apiName = 'system_cleanup' LIMIT 1");
     $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $row = $stmt->fetch();
     $lastCleanup = $row ? strtotime($row['lastRequestTime']) : 0;
-
     if (($now - $lastCleanup) > 1800) {
         $db->exec("DELETE FROM requestCache WHERE expiresAt < NOW()");
-        $db->exec("DELETE FROM offlineCache WHERE expiresAt < NOW()");
         $db->exec("DELETE FROM requestHistory WHERE requestTime < DATE_SUB(NOW(), INTERVAL 7 DAY)");
         $db->exec("UPDATE proxyStatus SET isBlocked = 0, blockedUntil = NULL WHERE blockedUntil < DATE_SUB(NOW(), INTERVAL 24 HOUR)");
-
         $stmt = getStatement("REPLACE INTO rateLimitLog (apiName, lastRequestTime) VALUES ('system_cleanup', NOW())");
         $stmt->execute();
     }
 }
-function saveToOfflineCache(string $type, string $id, array $data): void {
-    $db = getDB();
-    $id = normalizeId($id);
-    $expires = date('Y-m-d H:i:s', time() + CACHE_DURATION * 2);
-    $stmt = getStatement("REPLACE INTO offlineCache (entityType, entityId, data, expiresAt) VALUES (:t, :id, :data, :ex)");
-    $stmt->bindValue(':t', $type);
-    $stmt->bindValue(':id', $id);
-    $stmt->bindValue(':data', json_encode($data));
-    $stmt->bindValue(':ex', $expires);
-    $stmt->execute();
-}
-function getFromOfflineCache(string $type, string $id): ?array {
-    $db = getDB();
-    $id = normalizeId($id);
-    $stmt = getStatement("SELECT data FROM offlineCache WHERE entityType=:t AND entityId=:id AND expiresAt > NOW()");
-    $stmt->bindValue(':t', $type);
-    $stmt->bindValue(':id', $id);
-    $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ? json_decode($row['data'], true) : null;
-}
 
 // ── Rate Limiting & Proxies ──────────────────────────────
-function checkRateLimit(string $api = 'itunes'): bool {
+function checkRateLimit(string $api = 'itunes'): bool
+{
     global $lastRequestTime;
     if (ENABLE_REQUEST_THROTTLING) {
         $now = microtime(true);
@@ -759,14 +779,19 @@ function checkRateLimit(string $api = 'itunes'): bool {
     }
     return true;
 }
-function handleRateLimitHit(string $api = 'itunes'): void { /* log and block */ }
-function resetRateLimit(string $api = 'itunes', bool $success = true): void { /* reset counters */ }
-function loadProxies(): array {
+
+function handleRateLimitHit(string $api = 'itunes'): void {}
+function resetRateLimit(string $api = 'itunes', bool $success = true): void {}
+
+function loadProxies(): array
+{
     if (!file_exists(PROXY_LIST_FILE)) return [];
     $lines = file(PROXY_LIST_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     return array_filter($lines, fn($l) => strpos($l, '://') !== false);
 }
-function getNextProxy(): ?string {
+
+function getNextProxy(): ?string
+{
     global $currentProxyIndex;
     $proxies = loadProxies();
     if (empty($proxies)) return null;
@@ -777,7 +802,7 @@ function getNextProxy(): ?string {
         $stmt = getStatement("SELECT isBlocked, blockedUntil FROM proxyStatus WHERE proxyUrl = :url");
         $stmt->bindValue(':url', $proxy);
         $stmt->execute();
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $row = $stmt->fetch();
         if (!$row || !$row['isBlocked'] || strtotime($row['blockedUntil']) < time()) {
             $currentProxyIndex = ($idx + 1) % count($proxies);
             $stmt = getStatement("REPLACE INTO proxyStatus (proxyUrl, lastUsed) VALUES (:url, NOW())");
@@ -788,8 +813,11 @@ function getNextProxy(): ?string {
     }
     return null;
 }
+
 function rotateProxy(): ?string { return getNextProxy(); }
-function markProxyStatus(string $proxy, bool $success): void {
+
+function markProxyStatus(string $proxy, bool $success): void
+{
     $db = getDB();
     if ($success) {
         $stmt = getStatement("UPDATE proxyStatus SET successCount = successCount + 1, isBlocked = 0 WHERE proxyUrl = :url");
@@ -800,27 +828,37 @@ function markProxyStatus(string $proxy, bool $success): void {
     $stmt->execute();
 }
 
-// ── iTunes API Calls with Fallback ────────────────────────
-function makeApiRequest(string $url, int $retry = 0): ?array {
+// ── iTunes API Calls ──────────────────────────────────────
+function makeApiRequest(string $url, int $retry = 0): ?array
+{
     if (!checkRateLimit()) {
-        if ($retry < RATE_LIMIT_MAX_RETRIES) { usleep((RATE_LIMIT_BASE_DELAY * pow(2, $retry) + mt_rand(0,1000000)/1e6)*1e6); return makeApiRequest($url, $retry+1); }
+        if ($retry < RATE_LIMIT_MAX_RETRIES) {
+            usleep((RATE_LIMIT_BASE_DELAY * pow(2, $retry) + mt_rand(0, 1000000) / 1e6) * 1e6);
+            return makeApiRequest($url, $retry + 1);
+        }
         return null;
     }
     $ch = curl_init();
     curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => true, CURLOPT_TIMEOUT => 15,
-        CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_SSL_VERIFYPEER => false, CURLOPT_ENCODING => '',
-        CURLOPT_HEADER => true, CURLOPT_FORBID_REUSE => true, CURLOPT_FRESH_CONNECT => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_CONNECTTIMEOUT => 8,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_ENCODING => '',
+        CURLOPT_HEADER => true,
+        CURLOPT_FORBID_REUSE => true,
+        CURLOPT_FRESH_CONNECT => true,
     ]);
     global $userAgents;
     if (ENABLE_USER_AGENT_ROTATION) curl_setopt($ch, CURLOPT_USERAGENT, $userAgents[array_rand($userAgents)]);
     $currentProxy = null;
     if (USE_PROXY_ROTATION && ($currentProxy = getNextProxy())) curl_setopt($ch, CURLOPT_PROXY, $currentProxy);
     if (ENABLE_IP_SPOOFING) {
-        $ip = mt_rand(1,255).'.'.mt_rand(0,255).'.'.mt_rand(0,255).'.'.mt_rand(1,255);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-Forwarded-For: '.$ip, 'X-Real-IP: '.$ip, 'Client-IP: '.$ip]);
+        $ip = mt_rand(1, 255) . '.' . mt_rand(0, 255) . '.' . mt_rand(0, 255) . '.' . mt_rand(1, 255);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-Forwarded-For: ' . $ip, 'X-Real-IP: ' . $ip, 'Client-IP: ' . $ip]);
     }
-    usleep(mt_rand(100000,500000));
+    usleep(mt_rand(100000, 500000));
     curl_setopt($ch, CURLOPT_URL, $url);
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -841,179 +879,168 @@ function makeApiRequest(string $url, int $retry = 0): ?array {
     } elseif ($httpCode === 429) {
         handleRateLimitHit('itunes');
         if ($currentProxy) markProxyStatus($currentProxy, false);
-        if ($retry < RATE_LIMIT_MAX_RETRIES) return makeApiRequest($url, $retry+1);
+        if ($retry < RATE_LIMIT_MAX_RETRIES) return makeApiRequest($url, $retry + 1);
         return null;
-    } elseif (in_array($httpCode, [403,503]) && $retry < RATE_LIMIT_MAX_RETRIES) {
+    } elseif (in_array($httpCode, [403, 503]) && $retry < RATE_LIMIT_MAX_RETRIES) {
         rotateProxy();
-        sleep(mt_rand(5,15));
-        return makeApiRequest($url, $retry+1);
+        sleep(mt_rand(5, 15));
+        return makeApiRequest($url, $retry + 1);
     }
     return null;
 }
-function makeApiRequestWithFallback(string $url, array $params, int $retry = 0): array {
-    $response = makeApiRequest($url, $retry);
-    if ($response && isset($response['results'])) {
-        $response['source'] = 'api';
-        foreach ($response['results'] as $item) {
-            $type = $item['wrapperType'] ?? (isset($item['artistId']) && !isset($item['collectionId']) ? 'artist' : (isset($item['collectionId']) && !isset($item['trackId']) ? 'collection' : (isset($item['trackId']) ? 'track' : null)));
-            if ($type && isset($item[$type . 'Id'])) saveToOfflineCache($type, $item[$type . 'Id'], $item);
-        }
-        return $response;
-    }
-    if (OFFLINE_FALLBACK_ENABLED && isset($params['id'])) {
-        $ids = explode(',', $params['id']);
-        $results = [];
-        foreach ($ids as $rawId) {
-            $id = normalizeId(trim($rawId));
-            foreach (['artist', 'collection', 'track'] as $type) {
-                $cached = getFromOfflineCache($type, $id);
-                if ($cached) {
-                    attachMirrors($cached, $type, $id, $params['quality'] ?? null, $params['platform'] ?? 'telegram');
-                    $results[] = $cached;
-                    break;
-                }
-            }
-        }
-        if (!empty($results)) return ['resultCount'=>count($results), 'results'=>$results, 'fromCache'=>true];
-    }
-    return searchLocalDatabase($params);
-}
-function searchLocalDatabase(array $params): array {
+
+function searchLocalDatabase(array $params): array
+{
     $db = getDB();
     $results = [];
-    $platform = $params['platform'] ?? 'telegram';
     if (isset($params['term'])) {
         $term = '%' . strtolower($params['term']) . '%';
         $entity = $params['entity'] ?? 'all';
         $limit = min((int)($params['limit'] ?? 50), 500);
         $quality = $params['quality'] ?? null;
+
+        $queries = [];
         if ($entity === 'all' || $entity === 'musicArtist') {
-            $stmt = getStatement("SELECT *, 'artist' as wrapperType FROM artists WHERE LOWER(artistName) LIKE :term LIMIT :limit");
-            $stmt->bindValue(':term', $term);
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $stmt->execute();
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { attachMirrors($row, 'artist', $row['artistId'], $quality, $platform); $results[] = $row; }
+            $queries[] = ['table' => 'artists', 'type' => 'artist', 'idCol' => 'artistId', 'nameCol' => 'artistName', 'wrapper' => 'artist'];
         }
         if ($entity === 'all' || $entity === 'collection') {
-            $stmt = getStatement("SELECT *, 'collection' as wrapperType FROM collections WHERE LOWER(collectionName) LIKE :term LIMIT :limit");
-            $stmt->bindValue(':term', $term);
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $stmt->execute();
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { attachMirrors($row, 'collection', $row['collectionId'], $quality, $platform); $results[] = $row; }
+            $queries[] = ['table' => 'collections', 'type' => 'collection', 'idCol' => 'collectionId', 'nameCol' => 'collectionName', 'wrapper' => 'collection'];
         }
         if ($entity === 'all' || $entity === 'song') {
-            $stmt = getStatement("SELECT *, 'track' as wrapperType FROM tracks WHERE LOWER(trackName) LIKE :term LIMIT :limit");
+            $queries[] = ['table' => 'tracks', 'type' => 'track', 'idCol' => 'trackId', 'nameCol' => 'trackName', 'wrapper' => 'track'];
+        }
+
+        foreach ($queries as $q) {
+            $stmt = getStatement("SELECT *, '{$q['wrapper']}' as wrapperType FROM {$q['table']} WHERE LOWER({$q['nameCol']}) LIKE :term LIMIT :limit");
             $stmt->bindValue(':term', $term);
             $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
             $stmt->execute();
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { attachMirrors($row, 'track', $row['trackId'], $quality, $platform); $results[] = $row; }
+            while ($row = $stmt->fetch()) {
+                attachAttachments($row, $q['type'], $row[$q['idCol']], $quality);
+                $results[] = $row;
+            }
         }
     } elseif (isset($params['id'])) {
         $ids = explode(',', $params['id']);
         foreach ($ids as $rawId) {
-            $id = normalizeId(trim($rawId));
+            $id = trim($rawId);
             foreach (['artist', 'collection', 'track'] as $type) {
-                $entity = fetchEntityById($db, $type, $id, $params['quality'] ?? null, $platform);
-                if ($entity) { $results[] = $entity; break; }
+                $entity = fetchEntityById($db, $type, $id, $params['quality'] ?? null);
+                if ($entity) {
+                    $results[] = $entity;
+                    break;
+                }
             }
         }
     }
-    return ['resultCount'=>count($results), 'results'=>$results, 'fromCache'=>true];
+    return ['resultCount' => count($results), 'results' => $results, 'fromCache' => true];
 }
-function searchiTunes(PDO $db, array $params): array {
+
+function makeApiRequestWithFallback(string $url, array $params, int $retry = 0): array
+{
+    $response = makeApiRequest($url, $retry);
+    if ($response && isset($response['results'])) {
+        $response['source'] = 'api';
+        return $response;
+    }
+    return searchLocalDatabase($params);
+}
+
+// ── Core Search/Lookup Functions ──────────────────────────
+function processApiResults(PDO $db, array &$results, ?string $quality = null): void
+{
+    // Save each entity type
+    $artists = array_filter($results, fn($item) => ($item['wrapperType'] ?? '') === 'artist');
+    $collections = array_filter($results, fn($item) => ($item['wrapperType'] ?? '') === 'collection');
+    $tracks = array_filter($results, fn($item) => ($item['wrapperType'] ?? '') === 'track');
+
+    if (!empty($artists)) saveEntitiesFromApi($db, 'artists', $artists);
+    if (!empty($collections)) saveEntitiesFromApi($db, 'collections', $collections);
+    if (!empty($tracks)) saveEntitiesFromApi($db, 'tracks', $tracks);
+
+    // Now attach attachments to each result
+    foreach ($results as &$item) {
+        $type = $item['wrapperType'] ?? null;
+        if ($type === 'artist') attachAttachments($item, 'artist', $item['artistId'], $quality);
+        elseif ($type === 'collection') attachAttachments($item, 'collection', $item['collectionId'], $quality);
+        elseif ($type === 'track') attachAttachments($item, 'track', $item['trackId'], $quality);
+    }
+    unset($item);
+}
+
+/**
+ * Ensure every result has 'attachments' and convert isStreamable to int.
+ */
+function ensureResponseAttachments(array &$response, array $params): void
+{
+    if (!isset($response['results']) || !is_array($response['results'])) return;
+    foreach ($response['results'] as &$item) {
+        if (!isset($item['attachments'])) {
+            $type = $item['wrapperType'] ?? null;
+            if ($type === 'artist') attachAttachments($item, 'artist', $item['artistId'], $params['quality'] ?? null);
+            elseif ($type === 'collection') attachAttachments($item, 'collection', $item['collectionId'], $params['quality'] ?? null);
+            elseif ($type === 'track') attachAttachments($item, 'track', $item['trackId'], $params['quality'] ?? null);
+        }
+        if (isset($item['isStreamable'])) {
+            $item['isStreamable'] = (int)$item['isStreamable'];
+        }
+    }
+    unset($item);
+}
+
+function searchiTunes(PDO $db, array $params): array
+{
+    if (!isset($params['entity'])) $params['entity'] = 'musicArtist,album,song';
+    $params['media'] = 'music';
+
     $cached = getCachedResults($db, 'search', $params);
     if ($cached) {
-        foreach ($cached['results'] as &$item) {
-            unset($item['mirrorUrls']);
-        }
+        ensureResponseAttachments($cached, $params);
         return $cached;
     }
 
     $url = ITUNES_SEARCH_API . '?' . http_build_query($params);
     $response = makeApiRequestWithFallback($url, $params);
-    if ($response && isset($response['results']) && $response['resultCount'] > 0 && isset($response['source']) && $response['source'] === 'api') {
-        saveEntitiesFromApi($db, 'artists', $response['results']);
-        saveEntitiesFromApi($db, 'collections', $response['results']);
-        saveEntitiesFromApi($db, 'tracks', $response['results']);
+    if (isset($response['source']) && $response['source'] === 'api' && !empty($response['results'])) {
+        processApiResults($db, $response['results'], $params['quality'] ?? null);
         saveCacheIds($db, 'search', $params, $response['results']);
     }
-
-    if ($response && isset($response['results'])) {
-        foreach ($response['results'] as &$item) {
-            unset($item['mirrorUrls']);
-        }
-    }
-    return $response ?? ['resultCount'=>0, 'results'=>[]];
+    ensureResponseAttachments($response, $params);
+    return $response ?? ['resultCount' => 0, 'results' => []];
 }
-function lookupiTunes(PDO $db, array $params): array {
+
+function lookupiTunes(PDO $db, array $params): array
+{
     $cached = getCachedResults($db, 'lookup', $params);
     if ($cached) {
-        $quality = $params['quality'] ?? null;
-        $platform = $params['platform'] ?? 'telegram';
-        foreach ($cached['results'] as &$item) {
-            $type = $item['wrapperType'] ?? null;
-            if ($type === 'artist') attachMirrors($item, 'artist', $item['artistId'], $quality, $platform);
-            elseif ($type === 'collection') attachMirrors($item, 'collection', $item['collectionId'], $quality, $platform);
-            elseif ($type === 'track') {
-                attachMirrors($item, 'track', $item['trackId'], $quality, $platform);
-                $lyricsData = getLyrics($db, $item['trackId']);
-                if ($lyricsData['success']) {
-                    $item['lyrics'] = $lyricsData['lyrics'];
-                } else {
-                    $item['lyrics'] = null;
-                }
-            }
-        }
+        ensureResponseAttachments($cached, $params);
         return $cached;
     }
 
-    $apiParams = $params;
-    if (isset($apiParams['id'])) {
-        $ids = array_map('trim', explode(',', $apiParams['id']));
-        $denormalized = array_map('denormalizeId', $ids);
-        $apiParams['id'] = implode(',', $denormalized);
+    if (isset($params['id'])) {
+        $ids = array_map('trim', explode(',', $params['id']));
+        $params['id'] = implode(',', $ids);
     }
-    $url = ITUNES_LOOKUP_API . '?' . http_build_query($apiParams);
+    $url = ITUNES_LOOKUP_API . '?' . http_build_query($params);
     $response = makeApiRequestWithFallback($url, $params);
-    if ($response && isset($response['results']) && $response['resultCount'] > 0 && isset($response['source']) && $response['source'] === 'api') {
-        saveEntitiesFromApi($db, 'artists', $response['results']);
-        saveEntitiesFromApi($db, 'collections', $response['results']);
-        saveEntitiesFromApi($db, 'tracks', $response['results']);
+    if (isset($response['source']) && $response['source'] === 'api' && !empty($response['results'])) {
+        processApiResults($db, $response['results'], $params['quality'] ?? null);
         saveCacheIds($db, 'lookup', $params, $response['results']);
     }
-
-    if ($response && isset($response['results'])) {
-        $quality = $params['quality'] ?? null;
-        $platform = $params['platform'] ?? 'telegram';
-        foreach ($response['results'] as &$item) {
-            $type = $item['wrapperType'] ?? null;
-            if ($type === 'artist') attachMirrors($item, 'artist', $item['artistId'], $quality, $platform);
-            elseif ($type === 'collection') attachMirrors($item, 'collection', $item['collectionId'], $quality, $platform);
-            elseif ($type === 'track') {
-                attachMirrors($item, 'track', $item['trackId'], $quality, $platform);
-                $trackId = normalizeId($item['trackId']);
-                $lyricsData = getLyrics($db, $trackId);
-                if ($lyricsData['success']) {
-                    $item['lyrics'] = $lyricsData['lyrics'];
-                } else {
-                    $item['lyrics'] = null;
-                }
-            }
-        }
-    }
-    return $response ?? ['resultCount'=>0, 'results'=>[]];
+    ensureResponseAttachments($response, $params);
+    return $response ?? ['resultCount' => 0, 'results' => []];
 }
 
-// ── New / Enhanced Endpoints ──────────────────────────────
-function handleBatchLookup(PDO $db, array $params): array {
+// ── Additional Endpoints ──────────────────────────────────
+function handleBatchLookup(PDO $db, array $params): array
+{
     if (empty($params['ids'])) throw new Exception('Missing ids parameter (comma-separated)', 400);
     $ids = array_map('trim', explode(',', $params['ids']));
     $results = [];
     foreach ($ids as $id) {
-        $normalized = normalizeId($id);
         $found = false;
         foreach (['artist', 'collection', 'track'] as $type) {
-            $entity = fetchEntityById($db, $type, $normalized, $params['quality'] ?? null, $params['platform'] ?? 'telegram');
+            $entity = fetchEntityById($db, $type, $id, $params['quality'] ?? null);
             if ($entity) {
                 $results[] = $entity;
                 $found = true;
@@ -1021,38 +1048,39 @@ function handleBatchLookup(PDO $db, array $params): array {
             }
         }
         if (!$found) {
-            $lookup = lookupiTunes($db, ['id' => denormalizeId($normalized), 'quality' => $params['quality'] ?? null, 'platform' => $params['platform'] ?? 'telegram']);
+            $lookup = lookupiTunes($db, ['id' => $id, 'quality' => $params['quality'] ?? null]);
             if (!empty($lookup['results'])) $results[] = $lookup['results'][0];
         }
     }
     return ['resultCount' => count($results), 'results' => $results];
 }
-function handlePopular(PDO $db, array $params): array {
+
+function handlePopular(PDO $db, array $params): array
+{
     $limit = min((int)($params['limit'] ?? 20), 100);
     $stmt = getStatement("SELECT * FROM tracks ORDER BY trackId DESC LIMIT :limit");
     $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
     $stmt->execute();
     $tracks = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        attachMirrors($row, 'track', $row['trackId'], $params['quality'] ?? null, $params['platform'] ?? 'telegram');
+    while ($row = $stmt->fetch()) {
+        attachAttachments($row, 'track', $row['trackId'], $params['quality'] ?? null);
         $tracks[] = $row;
     }
     return ['resultCount' => count($tracks), 'results' => $tracks];
 }
-function handleCacheClear(PDO $db): array {
+
+function handleCacheClear(PDO $db): array
+{
     $db->exec("DELETE FROM requestCache");
-    $db->exec("DELETE FROM offlineCache");
     return ['success' => true, 'message' => 'All cache cleared'];
 }
-function handleStats(PDO $db): array {
-    $stmt = $db->query("SELECT COUNT(*) as total FROM requestCache WHERE expiresAt > NOW()");
-    $cacheCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
-    $stmt = $db->query("SELECT COUNT(*) as total FROM tracks");
-    $trackCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
-    $stmt = $db->query("SELECT COUNT(*) as total FROM artists");
-    $artistCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
-    $stmt = $db->query("SELECT COUNT(*) as total FROM collections");
-    $albumCount = $stmt->fetch(PDO::FETCH_ASSOC)['total'];
+
+function handleStats(PDO $db): array
+{
+    $cacheCount = $db->query("SELECT COUNT(*) as total FROM requestCache WHERE expiresAt > NOW()")->fetch()['total'];
+    $trackCount = $db->query("SELECT COUNT(*) as total FROM tracks")->fetch()['total'];
+    $artistCount = $db->query("SELECT COUNT(*) as total FROM artists")->fetch()['total'];
+    $albumCount = $db->query("SELECT COUNT(*) as total FROM collections")->fetch()['total'];
     return [
         'cache_entries' => $cacheCount,
         'track_count' => $trackCount,
@@ -1062,73 +1090,64 @@ function handleStats(PDO $db): array {
         'uptime_seconds' => time() - (filemtime(__FILE__) ?? time()),
     ];
 }
-function handleProxyStatus(PDO $db): array {
+
+function handleProxyStatus(PDO $db): array
+{
     $stmt = $db->query("SELECT proxyUrl, successCount, failCount, isBlocked, lastUsed FROM proxyStatus ORDER BY successCount DESC");
-    $proxies = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $proxies[] = $row;
-    return ['proxies' => $proxies];
+    return ['proxies' => $stmt->fetchAll()];
 }
-function handleResetRateLimit(PDO $db): array {
+
+function handleResetRateLimit(PDO $db): array
+{
     $db->exec("DELETE FROM rateLimitLog");
     $db->exec("DELETE FROM requestHistory WHERE success = 0 AND requestTime > DATE_SUB(NOW(), INTERVAL 1 HOUR)");
     return ['success' => true, 'message' => 'Rate limit counters reset'];
 }
 
 // ── Download Manager Functions ────────────────────────────
-function resolveTrackIdsFromInput(PDO $db, array $params): array {
+function resolveTrackIdsFromInput(PDO $db, array $params): array
+{
     $trackIds = [];
-
     if (!empty($params['trackId'])) {
         $ids = is_array($params['trackId']) ? $params['trackId'] : explode(',', $params['trackId']);
-        foreach ($ids as $tid) {
-            $trackIds[] = normalizeId(trim($tid));
-        }
+        $trackIds = array_merge($trackIds, array_map('trim', $ids));
     }
-
     if (!empty($params['albumId'])) {
-        $albumId = normalizeId($params['albumId']);
+        $albumId = $params['albumId'];
         $stmt = getStatement("SELECT trackId FROM tracks WHERE collectionId = :aid");
         $stmt->bindValue(':aid', $albumId);
         $stmt->execute();
         $found = false;
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        while ($row = $stmt->fetch()) {
             $trackIds[] = $row['trackId'];
             $found = true;
         }
         if (!$found) {
-            $lookup = lookupiTunes($db, ['id' => denormalizeId($albumId), 'entity' => 'song']);
+            $lookup = lookupiTunes($db, ['id' => $albumId, 'entity' => 'song']);
             if (!empty($lookup['results'])) {
                 $stmt2 = getStatement("SELECT trackId FROM tracks WHERE collectionId = :aid");
                 $stmt2->bindValue(':aid', $albumId);
                 $stmt2->execute();
-                while ($row = $stmt2->fetch(PDO::FETCH_ASSOC)) {
-                    $trackIds[] = $row['trackId'];
-                }
+                while ($row = $stmt2->fetch()) $trackIds[] = $row['trackId'];
             }
         }
     }
-
     if (!empty($params['artistId'])) {
-        $artistId = normalizeId($params['artistId']);
+        $artistId = $params['artistId'];
         $stmt = getStatement("SELECT trackId FROM tracks WHERE artistId = :aid");
         $stmt->bindValue(':aid', $artistId);
         $stmt->execute();
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $trackIds[] = $row['trackId'];
-        }
+        while ($row = $stmt->fetch()) $trackIds[] = $row['trackId'];
     }
-
     return array_unique($trackIds);
 }
 
-function handleDownloadAdd(PDO $db, array $params): array {
+function handleDownloadAdd(PDO $db, array $params): array
+{
     $trackIds = resolveTrackIdsFromInput($db, $params);
-    if (empty($trackIds)) {
-        throw new Exception('No tracks resolved. Provide trackId, albumId, or artistId.', 400);
-    }
+    if (empty($trackIds)) throw new Exception('No tracks resolved. Provide trackId, albumId, or artistId.', 400);
 
     $quality = $params['quality'] ?? DEFAULT_AUDIO_QUALITY;
-    $platform = $params['platform'] ?? 'telegram';
     $priority = (int)($params['priority'] ?? 0);
     $skipExisting = filter_var($params['skipExisting'] ?? true, FILTER_VALIDATE_BOOL);
     $force = filter_var($params['force'] ?? false, FILTER_VALIDATE_BOOL);
@@ -1137,76 +1156,45 @@ function handleDownloadAdd(PDO $db, array $params): array {
         $initialStatus = DOWNLOAD_STATUS_PENDING;
     }
 
-    $added = [];
-    $skipped = [];
-    $failed = [];
-
+    $added = $skipped = $failed = [];
     $db->beginTransaction();
     foreach ($trackIds as $tid) {
         if ($skipExisting) {
-            $stmt = getStatement("SELECT id, status FROM download_queue WHERE trackId = :tid AND status NOT IN ('completed', 'failed', 'stopped')");
+            $stmt = getStatement("SELECT id, status FROM downloadQueue WHERE trackId = :tid AND status NOT IN ('completed', 'failed', 'stopped')");
             $stmt->bindValue(':tid', $tid);
             $stmt->execute();
-            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($existing) {
-                $skipped[] = [
-                    'trackId' => denormalizeId($tid),
-                    'reason' => 'Already in queue with status ' . $existing['status']
-                ];
+            if ($stmt->fetch()) {
+                $skipped[] = ['trackId' => $tid, 'reason' => 'Already in queue'];
                 continue;
             }
         }
 
-        $track = fetchEntityById($db, 'track', $tid, $quality, $platform);
+        $track = fetchEntityById($db, 'track', $tid, $quality);
         if (!$track) {
-            $lookup = lookupiTunes($db, ['id' => denormalizeId($tid)]);
+            $lookup = lookupiTunes($db, ['id' => $tid]);
             if (empty($lookup['results'])) {
-                $failed[] = [
-                    'trackId' => denormalizeId($tid),
-                    'reason' => 'Track not found in iTunes'
-                ];
+                $failed[] = ['trackId' => $tid, 'reason' => 'Track not found in iTunes'];
                 continue;
             }
             $track = $lookup['results'][0];
-            attachMirrors($track, 'track', $tid, $quality, $platform);
+            attachAttachments($track, 'track', $tid, $quality);
         }
 
-        $hasAudio = isset($track['mirrorUrls']['audioUrl']) && !empty($track['mirrorUrls']['audioUrl']['url']);
-        if ($hasAudio && !$force) {
-            $finalStatus = DOWNLOAD_STATUS_COMPLETED;
-            $completedAt = 'NOW()';
-        } else {
-            $finalStatus = $initialStatus;
-            $completedAt = null;
-        }
+        $hasAudio = isset($track['attachments']['audioUrls']) && count($track['attachments']['audioUrls']) > 0;
+        $finalStatus = ($hasAudio && !$force) ? DOWNLOAD_STATUS_COMPLETED : $initialStatus;
+        $completedAt = ($finalStatus === DOWNLOAD_STATUS_COMPLETED) ? 'NOW()' : 'NULL';
 
-        $sql = "INSERT INTO download_queue (trackId, status, quality, platform, priority, addedAt, completedAt) 
-                VALUES (:tid, :status, :qual, :plat, :prio, NOW(), " . ($completedAt ? 'NOW()' : 'NULL') . ")";
-        $stmt = getStatement($sql);
+        $stmt = getStatement("INSERT INTO downloadQueue (trackId, status, quality, priority, addedAt, completedAt) 
+                              VALUES (:tid, :status, :qual, :prio, NOW(), $completedAt)");
         $stmt->bindValue(':tid', $tid);
         $stmt->bindValue(':status', $finalStatus);
         $stmt->bindValue(':qual', $quality);
-        $stmt->bindValue(':plat', $platform);
         $stmt->bindValue(':prio', $priority, PDO::PARAM_INT);
         $stmt->execute();
 
         $downloadId = $db->lastInsertId();
-
-        $trackData = fetchEntityById($db, 'track', $tid, $quality, $platform);
-        if (!$trackData) {
-            $trackData = $track;
-            attachMirrors($trackData, 'track', $tid, $quality, $platform);
-        }
-        $lyricsData = getLyrics($db, $tid);
-        if ($lyricsData['success']) {
-            $trackData['lyrics'] = $lyricsData['lyrics'];
-        }
-
-        $added[] = [
-            'downloadId' => $downloadId,
-            'trackId' => denormalizeId($tid),
-            'track' => $trackData
-        ];
+        $trackData = fetchEntityById($db, 'track', $tid, $quality) ?: $track;
+        $added[] = ['downloadId' => $downloadId, 'trackId' => $tid, 'track' => $trackData];
     }
     $db->commit();
 
@@ -1220,26 +1208,24 @@ function handleDownloadAdd(PDO $db, array $params): array {
         'failed' => $failed
     ];
 }
-function handleDownloadQueue(PDO $db, array $params): array {
+
+function handleDownloadQueue(PDO $db, array $params): array
+{
     $status = $params['status'] ?? null;
     $limit = min((int)($params['limit'] ?? 100), 2000);
     $offset = (int)($params['offset'] ?? 0);
     $quality = $params['quality'] ?? null;
-    $platform = $params['platform'] ?? 'telegram';
 
-    $sql = "SELECT d.* FROM download_queue d";
-    $countSql = "SELECT COUNT(*) as total FROM download_queue d";
-
+    $sql = "SELECT d.* FROM downloadQueue d";
+    $countSql = "SELECT COUNT(*) as total FROM downloadQueue d";
     if ($status && in_array($status, [DOWNLOAD_STATUS_PENDING, DOWNLOAD_STATUS_DOWNLOADING, DOWNLOAD_STATUS_PAUSED, DOWNLOAD_STATUS_COMPLETED, DOWNLOAD_STATUS_FAILED, DOWNLOAD_STATUS_STOPPED])) {
         $sql .= " WHERE d.status = :status";
         $countSql .= " WHERE d.status = :status";
     }
-
     $sql .= " ORDER BY d.priority DESC, d.addedAt ASC LIMIT :limit OFFSET :offset";
 
     $stmt = getStatement($sql);
     $countStmt = getStatement($countSql);
-
     if ($status) {
         $stmt->bindValue(':status', $status);
         $countStmt->bindValue(':status', $status);
@@ -1248,97 +1234,74 @@ function handleDownloadQueue(PDO $db, array $params): array {
     $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
     $stmt->execute();
     $items = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    while ($row = $stmt->fetch()) {
         $tid = $row['trackId'];
-        $trackData = fetchEntityById($db, 'track', $tid, $quality, $platform);
-        if (!$trackData) {
-            $trackData = ['trackId' => denormalizeId($tid)];
-        }
+        $trackData = fetchEntityById($db, 'track', $tid, $quality) ?: ['trackId' => $tid];
         $downloadMeta = [
             'download_id' => $row['id'],
             'download_status' => $row['status'],
             'file_path' => $row['filePath'],
             'quality' => $row['quality'],
-            'platform' => $row['platform'],
             'added_at' => $row['addedAt'],
             'started_at' => $row['startedAt'],
             'completed_at' => $row['completedAt'],
             'error_message' => $row['errorMessage'],
             'retry_count' => $row['retryCount'],
-            'priority' => $row['priority']
+            'priority' => $row['priority'],
+            'percent' => (int)$row['percent']
         ];
         $items[] = array_merge($trackData, $downloadMeta);
     }
-
     $countStmt->execute();
-    $total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
-
-    return [
-        'success' => true,
-        'total' => (int)$total,
-        'limit' => $limit,
-        'offset' => $offset,
-        'items' => $items
-    ];
+    $total = $countStmt->fetch()['total'] ?? 0;
+    return ['success' => true, 'total' => (int)$total, 'limit' => $limit, 'offset' => $offset, 'items' => $items];
 }
 
-function handleDownloadStatus(PDO $db, array $params): array {
+function handleDownloadStatus(PDO $db, array $params): array
+{
     $id = $params['id'] ?? null;
     $trackId = $params['trackId'] ?? null;
+    if (!$id && !$trackId) throw new Exception('Missing id or trackId parameter', 400);
     $quality = $params['quality'] ?? null;
-    $platform = $params['platform'] ?? 'telegram';
-
-    if (!$id && !$trackId) {
-        throw new Exception('Missing id or trackId parameter', 400);
-    }
 
     if ($id) {
-        $stmt = getStatement("SELECT * FROM download_queue WHERE id = :id");
+        $stmt = getStatement("SELECT * FROM downloadQueue WHERE id = :id");
         $stmt->bindValue(':id', $id, PDO::PARAM_INT);
     } else {
-        $tid = normalizeId($trackId);
-        $stmt = getStatement("SELECT * FROM download_queue WHERE trackId = :tid ORDER BY id DESC LIMIT 1");
-        $stmt->bindValue(':tid', $tid);
+        $stmt = getStatement("SELECT * FROM downloadQueue WHERE trackId = :tid ORDER BY id DESC LIMIT 1");
+        $stmt->bindValue(':tid', $trackId);
     }
     $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row) {
-        return ['success' => false, 'error' => 'Download entry not found'];
-    }
+    $row = $stmt->fetch();
+    if (!$row) return ['success' => false, 'error' => 'Download entry not found'];
 
     $tid = $row['trackId'];
-    $trackData = fetchEntityById($db, 'track', $tid, $quality, $platform);
-    if (!$trackData) {
-        $trackData = ['trackId' => denormalizeId($tid)];
-    }
-
+    $trackData = fetchEntityById($db, 'track', $tid, $quality) ?: ['trackId' => $tid];
     $downloadMeta = [
         'download_id' => $row['id'],
         'download_status' => $row['status'],
         'file_path' => $row['filePath'],
         'quality' => $row['quality'],
-        'platform' => $row['platform'],
         'added_at' => $row['addedAt'],
         'started_at' => $row['startedAt'],
         'completed_at' => $row['completedAt'],
         'error_message' => $row['errorMessage'],
         'retry_count' => $row['retryCount'],
-        'priority' => $row['priority']
+        'priority' => $row['priority'],
+        'percent' => (int)$row['percent']
     ];
-
-    return [
-        'success' => true,
-        'download' => array_merge($trackData, $downloadMeta)
-    ];
+    return ['success' => true, 'download' => array_merge($trackData, $downloadMeta)];
 }
 
-function handleDownloadUpdate(PDO $db, array $params): array {
+function handleDownloadUpdate(PDO $db, array $params): array
+{
     $idParam = $params['id'] ?? $params['ids'] ?? null;
     $trackIdsRaw = $params['trackIds'] ?? [];
     $filterStatus = $params['filterStatus'] ?? null;
     $status = $params['status'] ?? null;
     $filePath = $params['filePath'] ?? null;
     $errorMessage = $params['errorMessage'] ?? null;
+    $percent = isset($params['percent']) ? (int)$params['percent'] : null;
 
     $targetIds = [];
     if ($idParam !== null) {
@@ -1346,63 +1309,53 @@ function handleDownloadUpdate(PDO $db, array $params): array {
         $targetIds = array_map('intval', $idArray);
     } elseif (!empty($trackIdsRaw)) {
         $trackIds = is_array($trackIdsRaw) ? $trackIdsRaw : explode(',', (string)$trackIdsRaw);
-        $normalizedIds = array_map('normalizeId', $trackIds);
-        $placeholders = implode(',', array_fill(0, count($normalizedIds), '?'));
-        $stmt = $db->prepare("SELECT id FROM download_queue WHERE trackId IN ($placeholders)");
-        foreach ($normalizedIds as $i => $tid) $stmt->bindValue($i + 1, $tid);
+        $placeholders = implode(',', array_fill(0, count($trackIds), '?'));
+        $stmt = $db->prepare("SELECT id FROM downloadQueue WHERE trackId IN ($placeholders)");
+        foreach ($trackIds as $i => $tid) $stmt->bindValue($i + 1, $tid);
         $stmt->execute();
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $targetIds[] = $row['id'];
+        while ($row = $stmt->fetch()) $targetIds[] = $row['id'];
     } elseif ($filterStatus !== null) {
-        $stmt = $db->prepare("SELECT id FROM download_queue WHERE status = :status");
+        $stmt = $db->prepare("SELECT id FROM downloadQueue WHERE status = :status");
         $stmt->bindValue(':status', $filterStatus);
         $stmt->execute();
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $targetIds[] = $row['id'];
+        while ($row = $stmt->fetch()) $targetIds[] = $row['id'];
     }
 
-    if (empty($targetIds)) {
-        return ['success' => true, 'updated_count' => 0, 'message' => 'No matching entries found'];
-    }
+    if (empty($targetIds)) return ['success' => true, 'updated_count' => 0, 'message' => 'No matching entries'];
 
     $updates = [];
-    $updateBindings = [];
+    $bindings = [];
     if ($status !== null && $status !== '') {
-        $allowed = [DOWNLOAD_STATUS_PENDING, DOWNLOAD_STATUS_DOWNLOADING, DOWNLOAD_STATUS_PAUSED, DOWNLOAD_STATUS_COMPLETED, DOWNLOAD_STATUS_FAILED, DOWNLOAD_STATUS_STOPPED];
-        if (!in_array($status, $allowed)) throw new Exception('Invalid status', 400);
+        if (!in_array($status, [DOWNLOAD_STATUS_PENDING, DOWNLOAD_STATUS_DOWNLOADING, DOWNLOAD_STATUS_PAUSED, DOWNLOAD_STATUS_COMPLETED, DOWNLOAD_STATUS_FAILED, DOWNLOAD_STATUS_STOPPED])) {
+            throw new Exception('Invalid status', 400);
+        }
         $updates[] = "status = ?";
-        $updateBindings[] = $status;
+        $bindings[] = $status;
         if ($status === DOWNLOAD_STATUS_DOWNLOADING) $updates[] = "startedAt = COALESCE(startedAt, NOW())";
         if ($status === DOWNLOAD_STATUS_COMPLETED) {
             $updates[] = "completedAt = NOW()";
             $updates[] = "errorMessage = NULL";
         }
     }
-    if ($filePath !== null) {
-        $updates[] = "filePath = ?";
-        $updateBindings[] = $filePath;
-    }
+    if ($filePath !== null) { $updates[] = "filePath = ?"; $bindings[] = $filePath; }
     if ($errorMessage !== null) {
         $updates[] = "errorMessage = ?";
-        $updateBindings[] = $errorMessage;
-        if ($status === null) {
-            $updates[] = "status = ?";
-            $updateBindings[] = DOWNLOAD_STATUS_FAILED;
-        }
+        $bindings[] = $errorMessage;
+        if ($status === null) { $updates[] = "status = ?"; $bindings[] = DOWNLOAD_STATUS_FAILED; }
     }
+    if ($percent !== null) { $updates[] = "percent = ?"; $bindings[] = $percent; }
 
     if (empty($updates)) throw new Exception('Nothing to update', 400);
 
     $db->beginTransaction();
     try {
         $placeholders = implode(',', array_fill(0, count($targetIds), '?'));
-        $sql = "UPDATE download_queue SET " . implode(', ', $updates) . " WHERE id IN ($placeholders)";
-        $stmt = $db->prepare($sql);
+        $stmt = $db->prepare("UPDATE downloadQueue SET " . implode(', ', $updates) . " WHERE id IN ($placeholders)");
         $pos = 1;
-        foreach ($updateBindings as $val) {
+        foreach ($bindings as $val) {
             $stmt->bindValue($pos++, $val, is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR);
         }
-        foreach ($targetIds as $id) {
-            $stmt->bindValue($pos++, $id, PDO::PARAM_INT);
-        }
+        foreach ($targetIds as $id) $stmt->bindValue($pos++, $id, PDO::PARAM_INT);
         $stmt->execute();
         $db->commit();
     } catch (Exception $e) {
@@ -1412,50 +1365,43 @@ function handleDownloadUpdate(PDO $db, array $params): array {
     return ['success' => true, 'updated_count' => count($targetIds), 'message' => 'Updated successfully'];
 }
 
-function handleDownloadDelete(PDO $db, array $params): array {
+function handleDownloadDelete(PDO $db, array $params): array
+{
     $idParam = $params['id'] ?? null;
     $idsParam = $params['ids'] ?? null;
     $trackIdsRaw = $params['trackIds'] ?? [];
     $status = $params['status'] ?? null;
     $all = filter_var($params['all'] ?? false, FILTER_VALIDATE_BOOL);
-
     $singleId = $params['id'] ?? null;
     $singleTrackId = $params['trackId'] ?? null;
 
     if (!$idParam && !$idsParam && !$trackIdsRaw && !$status && !$all && !$singleId && !$singleTrackId) {
-        throw new Exception('No deletion criteria: provide id, trackId, ids, trackIds, status, or all', 400);
+        throw new Exception('No deletion criteria', 400);
     }
 
-    $sql = "DELETE FROM download_queue";
+    $sql = "DELETE FROM downloadQueue";
     $bindings = [];
     $conditions = [];
 
     if ($all) {
         // no WHERE
     } elseif ($idParam !== null) {
-        if (is_array($idParam)) {
-            $idsArray = array_map('intval', $idParam);
-        } else {
-            $idsArray = array_map('intval', explode(',', $idParam));
-        }
+        $idsArray = is_array($idParam) ? $idParam : explode(',', $idParam);
+        $idsArray = array_map('intval', $idsArray);
         $placeholders = implode(',', array_fill(0, count($idsArray), '?'));
         $conditions[] = "id IN ($placeholders)";
         $bindings = array_merge($bindings, $idsArray);
     } elseif (!empty($idsParam)) {
-        if (is_array($idsParam)) {
-            $idsArray = array_map('intval', $idsParam);
-        } else {
-            $idsArray = array_map('intval', explode(',', $idsParam));
-        }
+        $idsArray = is_array($idsParam) ? $idsParam : explode(',', $idsParam);
+        $idsArray = array_map('intval', $idsArray);
         $placeholders = implode(',', array_fill(0, count($idsArray), '?'));
         $conditions[] = "id IN ($placeholders)";
         $bindings = array_merge($bindings, $idsArray);
     } elseif (!empty($trackIdsRaw)) {
         $trackIds = is_array($trackIdsRaw) ? $trackIdsRaw : explode(',', $trackIdsRaw);
-        $normalized = array_map('normalizeId', $trackIds);
-        $placeholders = implode(',', array_fill(0, count($normalized), '?'));
+        $placeholders = implode(',', array_fill(0, count($trackIds), '?'));
         $conditions[] = "trackId IN ($placeholders)";
-        $bindings = array_merge($bindings, $normalized);
+        $bindings = array_merge($bindings, $trackIds);
     } elseif ($status) {
         $conditions[] = "status = ?";
         $bindings[] = $status;
@@ -1464,47 +1410,83 @@ function handleDownloadDelete(PDO $db, array $params): array {
         $bindings[] = (int)$singleId;
     } elseif ($singleTrackId) {
         $conditions[] = "trackId = ?";
-        $bindings[] = normalizeId($singleTrackId);
+        $bindings[] = $singleTrackId;
     }
 
-    if (!empty($conditions)) {
-        $sql .= " WHERE " . implode(' AND ', $conditions);
-    }
-
+    if (!empty($conditions)) $sql .= " WHERE " . implode(' AND ', $conditions);
     $stmt = getStatement($sql);
     foreach ($bindings as $idx => $val) {
-        $type = is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR;
-        $stmt->bindValue($idx + 1, $val, $type);
+        $stmt->bindValue($idx + 1, $val, is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR);
     }
     $stmt->execute();
-    $deleted = $stmt->rowCount();
-
-    return ['success' => true, 'deleted_count' => $deleted];
+    return ['success' => true, 'deleted_count' => $stmt->rowCount()];
 }
 
-// ── HTTP Request Handling ─────────────────────────────────
-function enableCompression(): void {
+// ── HTTP Request Handling ──────────────────────────────────
+function enableCompression(): void
+{
     if (ENABLE_GZIP && !headers_sent() && extension_loaded('zlib') && strpos($_SERVER['HTTP_ACCEPT_ENCODING'] ?? '', 'gzip') !== false) {
         ini_set('zlib.output_compression', 'On');
         ini_set('zlib.output_compression_level', '6');
     }
 }
-function respond($data, int $status = 200): void {
+
+function respond($data, int $status = 200): void
+{
     if (!headers_sent()) {
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
         header('Access-Control-Allow-Origin: *');
         header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-        header('Access-Control-Allow-Headers: Content-Type, Quality');
+        header('Access-Control-Allow-Headers: Content-Type, Quality, Authorization');
     }
     echo json_encode($data, JSON_UNESCAPED_SLASHES);
     exit;
 }
-function handleRequest(): void {
+
+// ── Authentication Middleware ─────────────────────────────
+function authenticateRequest(): void
+{
+    $token = null;
+
+    // 1. Authorization: Bearer <token>
+    if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
+        if (preg_match('/Bearer\s+(.+)$/i', $_SERVER['HTTP_AUTHORIZATION'], $matches)) {
+            $token = $matches[1];
+        }
+    }
+
+    // 2. Query parameter ?token=...
+    if ($token === null && isset($_GET['token'])) {
+        $token = $_GET['token'];
+    }
+
+    // 3. POST field (for JSON body we already decoded; but we can also check raw)
+    if ($token === null) {
+        $input = json_decode(file_get_contents('php://input'), true);
+        if (isset($input['token'])) {
+            $token = $input['token'];
+        } elseif (isset($_POST['token'])) {
+            $token = $_POST['token'];
+        }
+    }
+
+    if ($token === null || !hash_equals(API_TOKEN, $token)) {
+        respond(['success' => false, 'error' => 'Unauthorized: invalid or missing token'], 401);
+    }
+}
+
+function handleRequest(): void
+{
     enableCompression();
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') respond([], 200);
+
+    // Token authentication for every endpoint
+    authenticateRequest();
+
     $db = getDB();
     cleanExpiredCache($db);
+
     $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
     $scriptDir = dirname($_SERVER['SCRIPT_NAME']);
     if ($scriptDir !== '/' && strpos($path, $scriptDir) === 0) $path = substr($path, strlen($scriptDir));
@@ -1515,21 +1497,34 @@ function handleRequest(): void {
     $quality = $_SERVER['HTTP_QUALITY'] ?? $params['quality'] ?? null;
     if ($quality && !in_array($quality, SUPPORTED_AUDIO_QUALITIES)) $quality = DEFAULT_AUDIO_QUALITY;
     if ($quality) $params['quality'] = $quality;
-    $platform = $params['platform'] ?? 'telegram';
-
-    // If platform is not set in mirror/get, default to 'all'
-    if ($path === '/mirror/get' && !isset($params['platform'])) {
-        $params['platform'] = 'all';
-    }
 
     try {
         switch ($path) {
-            case '/search': if (empty($params['term'])) throw new Exception('Missing term', 400); $response = searchiTunes($db, $params); break;
-            case '/lookup': if (empty($params['id'])) throw new Exception('Missing id', 400); $response = lookupiTunes($db, $params); break;
-            case '/mirror/set': if ($method !== 'POST') throw new Exception('Method not allowed', 405); $response = setMirrorUrl($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? '', $params['mirrorUrl'] ?? '', $params['quality'] ?? null, $platform); break;
-            case '/mirror/get': $response = getMirrorUrls($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null, $params['platform'] ?? 'all'); break;
+            case '/search':
+                if (empty($params['term'])) throw new Exception('Missing term', 400);
+                $response = searchiTunes($db, $params);
+                break;
+            case '/lookup':
+                if (empty($params['id'])) throw new Exception('Missing id', 400);
+                $response = lookupiTunes($db, $params);
+                break;
+            case '/mirror/set':
+                if ($method !== 'POST') throw new Exception('Method not allowed', 405);
+                if (isset($params['attachments']) && is_array($params['attachments'])) {
+                    $response = addMirrorUrlsBatch($db, $params['attachments']);
+                } else {
+                    $response = addMirrorUrl($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? '', $params['mirrorUrl'] ?? '', $params['quality'] ?? null, $params['source'] ?? 'custom');
+                }
+                break;
+            case '/mirror/get':
+                $response = getMirrorUrls($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null);
+                break;
             case '/mirror/delete':
-            case '/mirror/remove': if (!in_array($method, ['POST','DELETE'])) throw new Exception('Method not allowed', 405); $response = deleteMirrorUrl($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null, $platform); break;
+            case '/mirror/remove':
+                if (!in_array($method, ['POST', 'DELETE'])) throw new Exception('Method not allowed', 405);
+                $mirrorId = isset($params['mirrorId']) ? (int)$params['mirrorId'] : null;
+                $response = deleteMirrorUrl($db, $params['entityType'] ?? '', $params['entityId'] ?? '', $params['urlType'] ?? null, $params['quality'] ?? null, $mirrorId);
+                break;
             case '/track/save':
             case '/song/save':
                 if ($method !== 'POST') throw new Exception('Method not allowed', 405);
@@ -1551,30 +1546,44 @@ function handleRequest(): void {
                 if (empty($params['id'])) throw new Exception('Missing track id', 400);
                 $lyricsResult = getLyrics($db, $params['id']);
                 if (!$lyricsResult['success']) {
-                    $trackId = normalizeId($params['id']);
-                    $trackStmt = getStatement("SELECT * FROM tracks WHERE trackId = :tid");
-                    $trackStmt->bindValue(':tid', $trackId);
-                    $trackStmt->execute();
-                    $track = $trackStmt->fetch(PDO::FETCH_ASSOC);
+                    $track = fetchEntityById($db, 'track', $params['id']);
                     if ($track && !empty($track['trackName']) && !empty($track['artistName'])) {
-                        $lyrics = fetchLyricsFromLrclib($track['trackName'], $track['artistName'], $track['collectionName'] ?? null);
-                        if ($lyrics) {
-                            saveLyrics($db, $params['id'], $lyrics);
+                        $fetched = fetchLyricsFromLrclib($track['trackName'], $track['artistName'], $track['collectionName'] ?? null);
+                        if ($fetched) {
+                            saveLyrics($db, $params['id'], $fetched['data'], $fetched['type'], $fetched['source']);
                             $lyricsResult = getLyrics($db, $params['id']);
                         }
                     }
                 }
                 $response = $lyricsResult;
                 break;
-            case '/lyrics/save': if ($method !== 'POST') throw new Exception('Method not allowed', 405); if (empty($params['id']) || empty($params['lyrics'])) throw new Exception('Missing parameters', 400); $response = saveLyrics($db, $params['id'], $params['lyrics']); break;
-            case '/batch': $response = handleBatchLookup($db, $params); break;
-            case '/popular': $response = handlePopular($db, $params); break;
-            case '/cache/clear': $response = handleCacheClear($db); break;
-            case '/stats': $response = handleStats($db); break;
-            case '/health': $response = ['status'=>'ok', 'timestamp'=>date('c'), 'db_size_bytes'=>0]; break;
-            case '/db/stats': $response = handleStats($db); break;
-            case '/proxy/status': $response = handleProxyStatus($db); break;
-            case '/rate-limit/reset': $response = handleResetRateLimit($db); break;
+            case '/lyrics/save':
+                if ($method !== 'POST') throw new Exception('Method not allowed', 405);
+                if (empty($params['id']) || empty($params['lyrics'])) throw new Exception('Missing parameters', 400);
+                $response = saveLyrics($db, $params['id'], $params['lyrics'], $params['type'] ?? 'unsynced', $params['source'] ?? 'custom');
+                break;
+            case '/batch':
+                $response = handleBatchLookup($db, $params);
+                break;
+            case '/popular':
+                $response = handlePopular($db, $params);
+                break;
+            case '/cache/clear':
+                $response = handleCacheClear($db);
+                break;
+            case '/stats':
+            case '/db/stats':
+                $response = handleStats($db);
+                break;
+            case '/health':
+                $response = ['status' => 'ok', 'timestamp' => date('c'), 'db_size_bytes' => 0];
+                break;
+            case '/proxy/status':
+                $response = handleProxyStatus($db);
+                break;
+            case '/rate-limit/reset':
+                $response = handleResetRateLimit($db);
+                break;
             case '/download/add':
                 if ($method !== 'POST') throw new Exception('Method not allowed', 405);
                 $response = handleDownloadAdd($db, $params);
@@ -1587,6 +1596,12 @@ function handleRequest(): void {
                 if ($method !== 'GET') throw new Exception('Method not allowed', 405);
                 $response = handleDownloadStatus($db, $params);
                 break;
+            // New endpoint: follow download status + percent by track ID
+            case '/download/progress':
+                if ($method !== 'GET') throw new Exception('Method not allowed', 405);
+                if (empty($params['trackId'])) throw new Exception('Missing trackId', 400);
+                $response = handleDownloadStatus($db, $params);
+                break;
             case '/download/update':
                 if (!in_array($method, ['POST', 'PUT'])) throw new Exception('Method not allowed', 405);
                 $response = handleDownloadUpdate($db, $params);
@@ -1595,11 +1610,20 @@ function handleRequest(): void {
                 if (!in_array($method, ['POST', 'DELETE'])) throw new Exception('Method not allowed', 405);
                 $response = handleDownloadDelete($db, $params);
                 break;
-            default: throw new Exception('Endpoint not found', 404);
+            default:
+                throw new Exception('Endpoint not found', 404);
         }
-    } catch (Exception $e) { respond(['success'=>false, 'error'=>$e->getMessage()], $e->getCode() ?: 500); }
+    } catch (Exception $e) {
+        respond(['success' => false, 'error' => $e->getMessage()], $e->getCode() ?: 500);
+    }
     respond($response);
 }
+
 if (php_sapi_name() !== 'cli') {
-    try { handleRequest(); } catch (Throwable $e) { http_response_code(500); echo json_encode(['success'=>false, 'error'=>'Internal server error', 'message'=>$e->getMessage()]); }
+    try {
+        handleRequest();
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Internal server error', 'message' => $e->getMessage()]);
+    }
 }
