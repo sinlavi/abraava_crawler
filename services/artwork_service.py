@@ -7,7 +7,7 @@ from telegram import Bot, Message
 from core.logger import logger
 from core.http_client import HttpClient
 from services.api_client import APIClient
-from crawlers.itunes import set_mirror, get_mirror
+from crawlers.itunes import set_mirror, get_attachments
 from crawlers.youtube import get_artist_image
 from utils.helpers import get_high_res_artwork
 from utils.image_utils import crop_to_square
@@ -26,12 +26,14 @@ class ArtworkService:
         try:
             if not entity_id: return None
 
-            mirrors = await get_mirror(entity_type, str(entity_id), 'artworkUrl')
-            if mirrors and isinstance(mirrors, dict):
-                artwork_data = mirrors.get('artworkUrl')
+            attachments = await get_attachments(entity_type, str(entity_id))
+            if attachments and isinstance(attachments, dict):
+                artwork_list = attachments.get('artworkUrls', [])
+                if not artwork_list and 'artworkUrl' in attachments: # Fallback
+                     artwork_list = [attachments['artworkUrl']]
 
-                if artwork_data:
-                    cached_url = artwork_data.get('url') if isinstance(artwork_data, dict) else artwork_data
+                for art in artwork_list:
+                    cached_url = art.get('url') if isinstance(art, dict) else art
                     if cached_url and 'bot<token>/' in cached_url:
                         return cached_url.split('bot<token>/')[-1]
                     return cached_url

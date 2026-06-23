@@ -11,7 +11,7 @@ from core.http_client import HttpClient
 from models.schemas import DownloadQuality
 from crawlers.utils import get_track, get_or_crawl_collection, get_or_crawl_collection_tracks
 from crawlers.youtube import search_youtube_track, download_audio
-from crawlers.itunes import get_cached_audio, set_mirror, get_cached_artwork, get_mirror
+from crawlers.itunes import get_cached_audio, set_mirror, get_cached_artwork, get_attachments, update_download_status
 from utils.helpers import get_high_res_artwork, format_duration, generate_deep_link
 from utils.messages import send_message, edit_message, safe_delete
 
@@ -46,7 +46,7 @@ class DownloadService:
                                       is_batch=False, album_cover_bytes=None, collection_id=None,
                                       selected_quality=None, track_name_hint=None, track_index=None,
                                       status_prefix="", skip_size_check=True,
-                                      silent=False):
+                                      silent=False, download_id=None):
 
         # If no status_msg provided, use the first update to create it to avoid redundant send/delete
         if status_msg is None:
@@ -123,6 +123,8 @@ class DownloadService:
             logger.info(f"Using direct URL for external track {track_id}: {video_url}")
 
         if not video_url:
+            if download_id:
+                await update_download_status(download_id, "downloading", percent=40)
             status_msg = await self._update_status(chat_id, status_msg, "🔍 *در حال جستجوی منبع با کیفیت...*",
                                                    status_prefix, is_batch, silent=silent)
             logger.info(f"Searching YouTube for track {track_id}: {track.get('trackName')} - {track.get('artistName')}")
@@ -142,6 +144,8 @@ class DownloadService:
                 if collection_id:
                     self.album_tracker.start_track(user_id, collection_id, track.get("trackName", ""))
 
+                if download_id:
+                    await update_download_status(download_id, "downloading", percent=70)
                 status_msg = await self._update_status(chat_id, status_msg,
                                                        f"⏳ *در حال دانلود با کیفیت {quality_value}kbps...*",
                                                        status_prefix, is_batch, silent=silent)
@@ -151,14 +155,20 @@ class DownloadService:
                 if not mp3_path: raise Exception("Download failed")
 
                 temp_dir = os.path.dirname(mp3_path)
-                status_msg = await self._update_status(chat_id, status_msg, "🏷️ *در حال تگ‌گذاری فایل...*",
-                                                       status_prefix, is_batch, silent=silent)
+                if download_id:
+                    await update_download_status(download_id, "downloading", percent=75)
                 lyrics_dict = await lyrics_service.get_lyrics(track_id, track.get("trackName", ""),
                                                               track.get("artistName", ""), track.get("collectionName"),
                                                               duration_ms=duration_ms)
+                if download_id:
+                    await update_download_status(download_id, "downloading", percent=80)
+                status_msg = await self._update_status(chat_id, status_msg, "🏷️ *در حال تگ‌گذاری فایل...*",
+                                                       status_prefix, is_batch, silent=silent)
                 lyrics_to_tag = (lyrics_dict.get("synced") or lyrics_dict.get("plain")) if lyrics_dict else None
                 self.tagging_service.tag_mp3(Path(mp3_path), track, cover_bytes, lyrics=lyrics_to_tag)
 
+                if download_id:
+                    await update_download_status(download_id, "downloading", percent=95)
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آپلود روی سرورهای ابری...*",
                                                        status_prefix, is_batch, silent=silent)
 

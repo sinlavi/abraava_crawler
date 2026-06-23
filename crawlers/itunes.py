@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, Literal, List, Union, Tuple
 from pathlib import Path
 import aiosqlite
 
-from core.config import ITUNES_BASE_URL, OFFLINE_MODE, PROXY, FOOTER
+from core.config import ITUNES_BASE_URL, OFFLINE_MODE, PROXY, FOOTER, API_TOKEN
 from core.logger import logger
 from core.http_client import HttpClient
 from utils.messages import edit_message
@@ -98,7 +98,10 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
     api_path = f"/{endpoint}" if not endpoint.startswith("/") else endpoint
     url = f"{ITUNES_BASE_URL}{api_path}"
 
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Authorization": f"Bearer {API_TOKEN}"
+    }
     logger.info(f"3rah Request [{method}]: {url} - Params: {params}")
 
     max_retries = 3
@@ -175,44 +178,46 @@ def extract_file_id(url: Optional[str]) -> Optional[str]:
     return url
 
 
-async def get_mirror(entity_type: str, entity_id: Union[int, str], url_type: str, quality: str = None) -> Optional[
+async def get_attachments(entity_type: str, entity_id: Union[int, str], quality: str = None) -> Optional[
     Dict[str, Any]]:
-    logger.info(f"Checking mirror for {entity_type} {entity_id} {url_type} ({quality})")
-    # New 3rah API: mirrorUrls are included in lookup response
+    logger.info(f"Fetching attachments for {entity_type} {entity_id} ({quality})")
+    # New 3rah API: attachments are included in lookup response
     data = await lookup_itunes(entity_id, entity=entity_type, quality=quality)
     if data and data.get("results"):
         entity = data["results"][0]
-        return entity.get("mirrorUrls")
+        return entity.get("attachments")
     return None
 
 
 async def get_cached_audio(track_id: Union[int, str], quality: str = None) -> Optional[str]:
-    mirrors = await get_mirror('track', track_id, 'audioUrl', quality=quality or "192")
-    if mirrors and mirrors.get('audioUrl'):
-        audio_mirror = mirrors['audioUrl']
-        if str(audio_mirror.get('quality', '')) != str(quality or "192"):
-            return None
-        url = audio_mirror.get('url')
-        if not url: return None
-        logger.info(f"Cached audio found for {track_id}: {url}")
-        return extract_file_id(url)
+    attachments = await get_attachments('track', track_id, quality=quality or "192")
+    if attachments and attachments.get('audioUrls'):
+        for audio in attachments['audioUrls']:
+            if str(audio.get('quality')) == str(quality or "192"):
+                url = audio.get('url')
+                if url:
+                    logger.info(f"Cached audio found for {track_id}: {url}")
+                    return extract_file_id(url)
     logger.info(f"No cached audio for {track_id} with quality {quality or '192'}")
     return None
 
 
 async def get_cached_artwork(entity_type: str, entity_id: Union[int, str]) -> Optional[str]:
-    mirrors = await get_mirror(entity_type, entity_id, 'artworkUrl')
-    if mirrors and mirrors.get('artworkUrl'):
-        url = mirrors['artworkUrl'].get('url')
-        return extract_file_id(url)
+    attachments = await get_attachments(entity_type, entity_id)
+    if attachments and attachments.get('artworkUrls'):
+        # Just return the first mirror artwork if available
+        for art in attachments['artworkUrls']:
+            if art.get('source') == 'mirror' or art.get('size') == 'mirror':
+                return extract_file_id(art.get('url'))
     return None
 
 
 async def get_cached_preview(track_id: Union[int, str]) -> Optional[str]:
-    mirrors = await get_mirror('track', track_id, 'previewUrl')
-    if mirrors and mirrors.get('previewUrl'):
-        url = mirrors['previewUrl'].get('url')
-        return extract_file_id(url)
+    attachments = await get_attachments('track', track_id)
+    if attachments and attachments.get('previewUrls'):
+        for preview in attachments['previewUrls']:
+            if preview.get('source') != 'itunes':
+                return extract_file_id(preview.get('url'))
     return None
 
 
@@ -240,9 +245,16 @@ async def get_download_queue(status: str = "pending", limit: int = 60) -> Option
     return await fetch_itunes("download/queue", params={"status": status, "limit": limit})
 
 
-async def update_download_status(download_id: int, status: str, error_message: str = None) -> Optional[Dict[str, Any]]:
-    logger.info(f"Updating download {download_id} to status: {status}")
+async def update_download_status(download_id: int, status: str, error_message: str = None, percent: int = None) -> Optional[Dict[str, Any]]:
+    logger.info(f"Updating download {download_id} to status: {status} ({percent}%)")
     payload = {"id": download_id, "status": status}
     if error_message:
         payload["errorMessage"] = error_message
+    if percent is not None:
+        payload["percent"] = percent
     return await fetch_itunes("download/update", method="POST", payload=payload)
+
+
+async def reset_stuck_downloads() -> Optional[Dict[str, Any]]:
+    logger.info("Resetting stuck downloads (downloading -> pending)")
+    return await fetch_itunes("download/update", method="POST", payload={"filterStatus": "downloading", "status": "pending"})

@@ -39,7 +39,7 @@ define('SUPPORTED_AUDIO_QUALITIES', ['320', '192', '128']);
 define('DEFAULT_AUDIO_QUALITY', '192');
 
 // ── Authentication Token ───────────────────────────────────
-define('API_TOKEN', 'change_me_to_a_secure_token');
+define('API_TOKEN', getenv('API_TOKEN') ?: 'change_me_to_a_secure_token');
 
 // ── Download Status Constants ─────────────────────────────
 define('DOWNLOAD_STATUS_PENDING', 'pending');

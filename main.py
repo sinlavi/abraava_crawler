@@ -22,7 +22,7 @@ from services.tagging_service import TaggingService
 from services.error_notifier import BaleUploadErrorNotifier
 from services.download_service import DownloadService
 from services.lyrics_service import lyrics_service
-from crawlers.itunes import get_download_queue, update_download_status
+from crawlers.itunes import get_download_queue, update_download_status, reset_stuck_downloads
 
 import asyncio
 import signal
@@ -43,7 +43,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
     logger.info(f"Processing download {download_id} for track {track_id}")
 
     # Update status to downloading
-    await update_download_status(download_id, "downloading")
+    await update_download_status(download_id, "downloading", percent=0)
 
     # Process track
     try:
@@ -53,6 +53,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
             raise Exception("Track data not found")
 
         track = track_data["results"][0]
+        await update_download_status(download_id, "downloading", percent=10)
 
         # 2. Upload Artwork
         artwork_url = get_high_res_artwork(track.get("artworkUrl100"), 400)
@@ -68,9 +69,13 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
                         # Adapt send_artwork_photo if needed, but for now we follow the goal of hardcoding target chat
                         await bot.send_photo(TARGET_CHANNEL_ID, photo=artwork_bytes, caption=caption)
 
+        await update_download_status(download_id, "downloading", percent=20)
+
         # 3. Upload Preview
         if track.get("previewUrl"):
             await send_voice_preview(bot, TARGET_CHANNEL_ID, track_id, user_id, silent=True)
+
+        await update_download_status(download_id, "downloading", percent=30)
 
         # 4. Download and Send Audio
         _, success = await download_service.download_and_send_track(
@@ -78,12 +83,13 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
             track_id=track_id,
             user_id=user_id,
             selected_quality=quality,
-            silent=True
+            silent=True,
+            download_id=download_id
         )
 
         if success:
             logger.info(f"Successfully processed download {download_id}")
-            await update_download_status(download_id, "completed")
+            await update_download_status(download_id, "completed", percent=100)
         else:
             logger.error(f"Failed to process download {download_id}")
             await update_download_status(download_id, "failed", error_message="Download or upload failed")
@@ -114,6 +120,9 @@ async def run_crawler():
 
         await lyrics_service.init_db()
         logger.info("ABRAAVA Crawler initialized and starting poll loop...")
+
+        # Reset stuck downloads (downloading -> pending)
+        await reset_stuck_downloads()
 
         while True:
             try:
