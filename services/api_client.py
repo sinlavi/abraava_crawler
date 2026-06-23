@@ -8,14 +8,15 @@ class APIClient:
         self.base_url = base_url.rstrip('/')
         self.token = token
 
-    async def _request(self, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _request(self, path: str, method: str = 'POST', data: Dict[str, Any] = None) -> Dict[str, Any]:
         session = await HttpClient.get_session()
         headers = {
             'Authorization': f'Bearer {self.token}',
             'Content-Type': 'application/json'
         }
+        url = f"{self.base_url}{path}"
         try:
-            async with session.post(f"{self.base_url}?action={action}", json=data, headers=headers) as resp:
+            async with getattr(session, method.lower())(url, json=data, headers=headers) as resp:
                 return await resp.json()
         except Exception as e:
             logger.error(f"API request failed: {e}")
@@ -53,18 +54,15 @@ class APIClient:
             'result_count': result_count
         })
 
-    async def log_download(self, user_id: int, track_id: str, track_name: str, artist_name: str,
-                           album_name: str = '', file_size: int = 0, download_source: str = 'youtube', quality: str = '192') -> Dict[str, Any]:
-        return await self._request('log_download', {
-            'user_id': user_id,
-            'track_id': track_id,
-            'track_name': track_name,
-            'artist_name': artist_name,
-            'album_name': album_name,
-            'file_size': file_size,
-            'download_source': download_source,
-            'quality': quality
-        })
+    async def update_download(self, download_id: int, status: str = None, progress: int = None, status_step: str = None) -> Dict[str, Any]:
+        data = {'id': download_id}
+        if status: data['status'] = status
+        if progress: data['progress'] = progress
+        if status_step: data['status_step'] = status_step
+        return await self._request('/download/update', method='POST', data=data)
+
+    async def get_queue(self, status: str = 'pending', limit: int = 100) -> Dict[str, Any]:
+        return await self._request(f'/download/queue?status={status}&limit={limit}', method='GET')
 
     async def log_album_download(self, user_id: int, collection_id: str, collection_name: str,
                                  artist_name: str, total_tracks: int, successful_tracks: int,

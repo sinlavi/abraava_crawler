@@ -2,7 +2,7 @@ import logging
 import sys
 import os
 
-def setup_logger(name: str = "ABRAAVA") -> logging.Logger:
+def setup_logger(name: str = "MUSICMAN") -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
 

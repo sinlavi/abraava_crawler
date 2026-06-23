@@ -105,7 +105,7 @@ class DirectDownloadService:
         return await send_message(self.bot, chat_id, text)
 
     async def download_direct(self, chat_id, url, user_id, quality="192"):
-        status_msg = await send_message(self.bot, chat_id, f"⏳ *در حال شروع دانلود...*")
+        status_msg = await send_message(self.bot, chat_id, f"⏳ *Starting download...*")
 
         unique_id = uuid.uuid4().hex
         temp_dir = os.path.join(os.getcwd(), "downloads", unique_id)
@@ -141,7 +141,7 @@ class DirectDownloadService:
                     continue
 
             if success and mp3_path:
-                status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آماده‌سازی فایل...*")
+                status_msg = await self._update_status(chat_id, status_msg, "☁️ *Preparing file...*")
                 # For direct download, track_id is not available, using unique_id as fallback key
                 t_id = f"direct_{unique_id}"
                 lyrics_dict = await lyrics_service.get_lyrics(t_id, track_data.get("trackName", ""), track_data.get("artistName", ""), track_data.get("collectionName"))
@@ -151,10 +151,10 @@ class DirectDownloadService:
                 track_name = track_data['trackName']
 
                 fields = {
-                    "🎵 نام آهنگ": track_name,
-                    "🎤 نام هنرمند": track_data.get('artistName'),
-                    "💿 نام آلبوم": track_data.get('collectionName'),
-                    "📀 کیفیت دانلود": f"{quality} kbps"
+                    "🎵 Track Name": track_name,
+                    "🎤 Artist Name": track_data.get('artistName'),
+                    "💿 Album Name": track_data.get('collectionName'),
+                    "📀 Download Quality": f"{quality} kbps"
                 }
 
                 caption_lines = []
@@ -171,12 +171,12 @@ class DirectDownloadService:
                 await safe_delete(status_msg)
                 return status_msg, True
             else:
-                status_msg = await self._update_status(chat_id, status_msg, "❌ دانلود با خطا مواجه شد.")
+                status_msg = await self._update_status(chat_id, status_msg, "❌ Download failed.")
                 return status_msg, False
 
         except Exception as e:
             logger.error(f"Direct download service error: {e}")
-            status_msg = await self._update_status(chat_id, status_msg, f"❌ خطا: {str(e)[:50]}")
+            status_msg = await self._update_status(chat_id, status_msg, f"❌ Error: {str(e)[:50]}")
             return status_msg, False
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

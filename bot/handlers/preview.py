@@ -16,23 +16,23 @@ async def _update_preview_status(bot, chat_id, msg, text):
 async def send_voice_preview(bot: Bot, chat_id: int, track_id: int, user_id: int = None, reply_to=None, silent=False):
     status_msg = None
     if not silent:
-        status_msg = await send_message(bot, chat_id, "⏳ *در حال دریافت پیش‌نمایش...*", reply_to_message_id=reply_to)
+        status_msg = await send_message(bot, chat_id, "⏳ *Fetching preview...*", reply_to_message_id=reply_to)
 
     try:
         track_data = await get_track(track_id)
         if not track_data or not track_data.get("results"):
             if not silent:
-                status_msg = await _update_preview_status(bot, chat_id, status_msg, "اطلاعات آهنگ یافت نشد.")
+                status_msg = await _update_preview_status(bot, chat_id, status_msg, "Track info not found.")
             return status_msg
 
         track = track_data["results"][0]
         preview_url = track.get("previewUrl")
         if not preview_url:
             if not silent:
-                status_msg = await _update_preview_status(bot, chat_id, status_msg, "پیش‌نمایشی موجود نیست.")
+                status_msg = await _update_preview_status(bot, chat_id, status_msg, "No preview available.")
             return status_msg
 
-        caption = f"🎧 *پیش‌نمایش آهنگ {track.get('trackName')}*\n\n{FOOTER}"
+        caption = f"🎧 *Preview for {track.get('trackName')}*"
 
         # Attempt 1: From Cache (mirror)
         preview_cache = await get_cached_preview(track_id)
@@ -56,10 +56,10 @@ async def send_voice_preview(bot: Bot, chat_id: int, track_id: int, user_id: int
                 if not silent: await safe_delete(status_msg)
             else:
                 if not silent:
-                    status_msg = await _update_preview_status(bot, chat_id, status_msg, "دریافت پیش‌نمایش با خطا مواجه شد.")
+                    status_msg = await _update_preview_status(bot, chat_id, status_msg, "Error fetching preview.")
     except Exception as e:
         logger.error(f"Failed to send preview: {e}")
         if not silent:
-            status_msg = await _update_preview_status(bot, chat_id, status_msg, f"خطا: {str(e)[:50]}")
+            status_msg = await _update_preview_status(bot, chat_id, status_msg, f"Error: {str(e)[:50]}")
 
     return status_msg

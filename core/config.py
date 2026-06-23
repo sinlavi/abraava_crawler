@@ -4,11 +4,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bot Info
-BOT_NAME = "ابرآوا"
-BOT_USERNAME = "@abraava_bot"
-INFO_CHANNEL_USERNAME = "@abraava"
-FOOTER = f'\n\n{INFO_CHANNEL_USERNAME}\n{BOT_USERNAME}'
-DEEP_LINK_BASE = f"https://ble.ir/{BOT_USERNAME.lstrip('@')}?start="
+BOT_NAME = "MusicMan"
+BOT_USERNAME = "@musicman_bot"
+INFO_CHANNEL_USERNAME = "@musicman"
+FOOTER = ""
+DEEP_LINK_BASE = f"https://t.me/{BOT_USERNAME.lstrip('@')}?start="
 
 # Connection Settings
 PROXY = os.getenv("proxy", "socks5h://127.0.0.1:1080")
@@ -38,12 +38,12 @@ DEFAULT_QUALITY = "192"
 
 # Broadcast and Membership
 BROADCAST_CHANNELS = [
-    {"username": "@abraava", "name": "ابرآوا", "id": 5524168471},
+    {"username": "@musicman", "name": "MusicMan", "id": 5524168471},
 ]
 REQUIRED_CHANNELS = [
-    {"username": "@abraava", "name": "ابرآوا", "id": 5524168471},
+    {"username": "@musicman", "name": "MusicMan", "id": 5524168471},
 ]
-BROADCAST_KEYWORDS = ["#اطلاع_رسانی", "#ابرآوا", "#اطلاعیه", "#تبلیغات"]
+BROADCAST_KEYWORDS = ["#notification", "#musicman", "#announcement", "#ads"]
 
 # Cache Settings
 CACHE_DIR = "cache"

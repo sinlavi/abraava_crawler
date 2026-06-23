@@ -5,7 +5,7 @@ from crawlers.itunes import lookup_itunes
 from services.music_adapter import MusicAdapter
 import re
 
-logger = logging.getLogger("ABRAAVA:UTILS")
+logger = logging.getLogger("MUSICMAN:UTILS")
 music_adapter = MusicAdapter()
 
 def format_artist_hashtag(artist_name: Optional[str]) -> str:

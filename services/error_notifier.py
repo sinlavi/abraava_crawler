@@ -40,11 +40,11 @@ class BaleUploadErrorNotifier:
         self.last_error_time = current_time
 
         notification_text = (
-            "⚠️ *اختلال در سرویس آپلود تلگرام* ⚠️\n\n"
-            "در حال حاضر سرویس آپلود فایل پیام‌رسان تلگرام با مشکل مواجه شده است.\n"
-            "به محض رفع مشکل، ربات به حالت عادی بازخواهد گشت.\n\n"
-            "✅ به محض رفع مشکل، این پیام حذف خواهد شد.\n\n"
-            "#اختلال\n\n@abraava\n@abraava_bot"
+            "⚠️ *Telegram Upload Service Issue* ⚠️\n\n"
+            "Currently, the Telegram file upload service is experiencing issues.\n"
+            "The bot will return to normal as soon as the issue is resolved.\n\n"
+            "✅ This message will be deleted once the issue is fixed.\n\n"
+            "#issue\n\n@musicman\n@musicman_bot"
         )
 
         try:

@@ -10,7 +10,7 @@ from crawlers.itunes import get_lyrics as get_3rah_lyrics, set_lyrics as set_3ra
 from pathlib import Path
 import http.cookiejar
 
-logger = logging.getLogger("ABRAAVA:LYRICS_SERVICE")
+logger = logging.getLogger("MUSICMAN:LYRICS_SERVICE")
 
 def _load_cookies_as_header(cookie_file):
     """Load Netscape cookies.txt and return a Cookie header string."""
@@ -152,7 +152,7 @@ class LyricsService:
         try:
             from core.http_client import HttpClient
             session = await HttpClient.get_session()
-            headers = {"User-Agent": "ABRAAVA-Crawler/1.1 (https://3rah.ir)"}
+            headers = {"User-Agent": "MusicMan-Crawler/1.1 (https://3rah.ir)"}
 
             # 1. Try exact match with duration (best for accuracy)
             params = {

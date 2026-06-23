@@ -43,7 +43,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
     logger.info(f"Processing download {download_id} for track {track_id}")
 
     # Update status to downloading
-    await update_download_status(download_id, "downloading")
+    await download_service.api_client.update_download(download_id, status="downloading", progress=5, status_step='pending')
 
     # Process track
     try:
@@ -64,7 +64,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
                 if not await artwork_service.get_cached_artwork_url("collection", coll_id):
                     artwork_bytes = await artwork_service.get_artwork_for_display("collection", coll_id, artwork_url, user_id)
                     if artwork_bytes:
-                        caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
+                        caption = f"🖼 *Track Artwork:* {track.get('trackName')} - {track.get('artistName')}"
                         # Adapt send_artwork_photo if needed, but for now we follow the goal of hardcoding target chat
                         await bot.send_photo(TARGET_CHANNEL_ID, photo=artwork_bytes, caption=caption)
 
@@ -78,18 +78,19 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
             track_id=track_id,
             user_id=user_id,
             selected_quality=quality,
-            silent=True
+            silent=True,
+            download_id=download_id
         )
 
         if success:
             logger.info(f"Successfully processed download {download_id}")
-            await update_download_status(download_id, "completed")
+            await download_service.api_client.update_download(download_id, status="completed", progress=100, status_step='completed')
         else:
             logger.error(f"Failed to process download {download_id}")
-            await update_download_status(download_id, "failed", error_message="Download or upload failed")
+            await download_service.api_client.update_download(download_id, status="failed", status_step='failed')
     except Exception as e:
         logger.exception(f"Error processing download {download_id}: {e}")
-        await update_download_status(download_id, "failed", error_message=str(e))
+        await download_service.api_client.update_download(download_id, status="failed", status_step='failed')
 
 
 async def run_crawler():
@@ -113,13 +114,13 @@ async def run_crawler():
                                            tagging_service, error_notifier, album_tracker, download_rate_limiter)
 
         await lyrics_service.init_db()
-        logger.info("ABRAAVA Crawler initialized and starting poll loop...")
+        logger.info("MusicMan Crawler initialized and starting poll loop...")
 
         while True:
             try:
                 # Poll for pending downloads
                 # Increase limit to 10 for concurrent processing
-                queue_resp = await get_download_queue(status="pending", limit=100)
+                queue_resp = await api_client.get_queue(status="pending", limit=100)
                 if not queue_resp or not queue_resp.get("success") or not queue_resp.get("items"):
                     logger.debug("No pending downloads found. Sleeping...")
                     await asyncio.sleep(30)

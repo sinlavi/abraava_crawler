@@ -4,7 +4,7 @@ import asyncio
 from telegram import Bot, Message
 from telegram.error import BadRequest, RetryAfter
 
-logger = logging.getLogger("ABRAAVA:MESSAGES")
+logger = logging.getLogger("MUSICMAN:MESSAGES")
 
 async def safe_delete(message, attempt=1):
     if not message: return
@@ -24,10 +24,10 @@ async def safe_delete(message, attempt=1):
 async def send_message(bot: Bot, chat_id, text, reply_markup=None, reply_to_message_id=None, **kwargs):
     try:
         await bot.send_chat_action(chat_id, "typing")
-        return await bot.send_message(chat_id, text=f"{text}{FOOTER}", reply_to_message_id=reply_to_message_id)
+        return await bot.send_message(chat_id, text=f"{text}", reply_to_message_id=reply_to_message_id)
     except RetryAfter as e:
         await asyncio.sleep(e.retry_after)
-        return await bot.send_message(chat_id, text=f"{text}{FOOTER}", reply_to_message_id=reply_to_message_id)
+        return await bot.send_message(chat_id, text=f"{text}", reply_to_message_id=reply_to_message_id)
     except Exception as e:
         logger.error(f"Send message failed: {e}")
         raise
@@ -37,7 +37,7 @@ async def edit_message(message: Message, text, reply_markup=None, attempt=1, **k
     chat_id = message.chat.id
 
     try:
-        return await message.edit_text(text=f"{text}{FOOTER}")
+        return await message.edit_text(text=f"{text}")
     except BadRequest as e:
         err_msg = str(e).lower()
         if "message is not modified" in err_msg:
@@ -60,4 +60,4 @@ async def edit_message(message: Message, text, reply_markup=None, attempt=1, **k
 
 async def reply_message(message: Message, text: str, **kwargs):
     await message.bot.send_chat_action(message.chat.id, "typing")
-    return await message.reply_text(text=f"{text}{FOOTER}")
+    return await message.reply_text(text=f"{text}")

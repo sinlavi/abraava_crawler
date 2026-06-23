@@ -71,23 +71,23 @@ class AlbumDownloadTracker:
         t = self.active_downloads[key]
 
         if t.cancelled:
-            return f"⏹️ *در حال توقف دانلود آلبوم {t.collection_name}...*"
+            return f"⏹️ *Stopping album download {t.collection_name}...*"
 
         completed = sum(1 for tr in t.tracks if tr.success)
         failed = sum(1 for tr in t.tracks if not tr.success and tr.error is not None)
         elapsed = time.time() - t.start_time
 
-        text = f"⬇️ *در حال دانلود آلبوم: {t.collection_name}*\n\n"
-        text += f"🎵 *پیشرفت:* {t.current_idx}/{t.total} قطعه\n"
-        text += f"✅ *موفق:* {completed}\n"
-        text += f"❌ *ناموفق:* {failed}\n\n"
+        text = f"⬇️ *Downloading Album: {t.collection_name}*\n\n"
+        text += f"🎵 *Progress:* {t.current_idx}/{t.total} tracks\n"
+        text += f"✅ *Success:* {completed}\n"
+        text += f"❌ *Failed:* {failed}\n\n"
 
         if t.current_idx < t.total and t.tracks and t.current_idx < len(t.tracks):
             current_track = t.tracks[t.current_idx]
-            text += f"🎤 *در حال دانلود:* {current_track.name}\n"
+            text += f"🎤 *Downloading:* {current_track.name}\n"
             if current_track.start_time > 0:
                 track_elapsed = int(time.time() - current_track.start_time)
-                text += f"⏱️ *زمان سپری شده:* {track_elapsed} ثانیه\n\n"
+                text += f"⏱️ *Elapsed Time:* {track_elapsed} seconds\n\n"
             else:
                 text += "\n"
 
@@ -98,9 +98,9 @@ class AlbumDownloadTracker:
             if eta > 0:
                 minutes, seconds = divmod(eta, 60)
                 if minutes > 0:
-                    text += f"⏱️ *زمان باقیمانده:* {minutes} دقیقه {seconds} ثانیه"
+                    text += f"⏱️ *Remaining Time:* {minutes}m {seconds}s"
                 else:
-                    text += f"⏱️ *زمان باقیمانده:* {seconds} ثانیه"
+                    text += f"⏱️ *Remaining Time:* {seconds}s"
         return text
 
     def finish_download(self, user_id: int, collection_id: int, successful_tracks: int = 0, failed_tracks: int = 0):
