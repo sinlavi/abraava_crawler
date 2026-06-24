@@ -7,8 +7,7 @@ from telegram import Bot, Message
 from core.logger import logger
 from core.http_client import HttpClient
 from services.api_client import APIClient
-from crawlers.itunes import set_mirror, get_attachments
-from crawlers.youtube import get_artist_image
+from crawlers.itunes import set_mirror, get_attachments, search_itunes_artwork
 from utils.helpers import get_high_res_artwork
 from utils.image_utils import crop_to_square
 
@@ -72,10 +71,10 @@ class ArtworkService:
             logger.info(f"Using cached artwork file_id: {cached_file_id}")
             return cached_file_id
 
-        # Fallback for artist artwork from YouTube Music
+        # Fallback for artist artwork from iTunes
         final_url = artwork_url
         if entity_type == "artist" and not final_url and entity_name:
-            final_url = get_artist_image(entity_name)
+            final_url = await search_itunes_artwork(entity_name, entity='musicArtist')
 
         if final_url:
             try:

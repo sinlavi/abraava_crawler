@@ -11,6 +11,7 @@ from core.config import ITUNES_BASE_URL, OFFLINE_MODE, PROXY, FOOTER, API_TOKEN
 from core.logger import logger
 from core.http_client import HttpClient
 from utils.messages import edit_message
+from utils.helpers import get_high_res_artwork
 
 
 class iTunesSQLiteCache:
@@ -212,6 +213,21 @@ async def get_cached_artwork(entity_type: str, entity_id: Union[int, str]) -> Op
                 url = url.replace('30x30', '600x600')
                 logger.info(f"Artwork url found: {url}")
                 return url
+    return None
+
+
+async def search_itunes_artwork(term: str, entity: str = 'musicTrack') -> Optional[str]:
+    """Search iTunes for an item and return its high-resolution artwork URL."""
+    try:
+        logger.info(f"Searching iTunes artwork for: {term} (entity: {entity})")
+        results = await search_itunes(term, entity=entity, limit=1)
+        if results and results.get('results'):
+            item = results['results'][0]
+            artwork_url = item.get('artworkUrl100')
+            if artwork_url:
+                return get_high_res_artwork(artwork_url, 600)
+    except Exception as e:
+        logger.error(f"Error searching iTunes artwork: {e}")
     return None
 
 

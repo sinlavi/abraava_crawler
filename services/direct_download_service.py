@@ -11,6 +11,7 @@ from core.http_client import HttpClient
 from utils.messages import send_message, edit_message, safe_delete
 from utils.image_utils import crop_to_square
 from core.config import PROXY, FOOTER
+from crawlers.itunes import search_itunes_artwork
 from telegram import Bot
 
 # ── User‑agent list (Same as youtube crawler) ────────────────────
@@ -145,18 +146,19 @@ class DirectDownloadService:
             if success and mp3_path:
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آماده‌سازی فایل...*")
 
-                # Download artwork
+                # Download artwork (prefer iTunes/3rah)
                 cover_bytes = None
-                thumbnail_url = info.get('thumbnail')
-                if thumbnail_url:
-                    try:
+                try:
+                    search_term = f"{track_data['trackName']} {track_data['artistName']}"
+                    artwork_url = await search_itunes_artwork(search_term)
+                    if artwork_url:
                         session = await HttpClient.get_session()
-                        async with session.get(thumbnail_url, timeout=15) as resp:
+                        async with session.get(artwork_url, timeout=15) as resp:
                             if resp.status == 200:
                                 cover_bytes = await resp.read()
                                 cover_bytes = crop_to_square(cover_bytes)
-                    except Exception as e:
-                        logger.warning(f"Failed to download thumbnail for direct download: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to get iTunes artwork for direct download: {e}")
 
                 # For direct download, track_id is not available, using unique_id as fallback key
                 t_id = f"direct_{unique_id}"
