@@ -114,8 +114,17 @@ class DownloadService:
         if cover_bytes is None:
             status_msg = await self._update_status(chat_id, status_msg, "🖼️ *در حال دریافت کاور آهنگ...*",
                                                    status_prefix, is_batch, silent=silent)
+
+            # Try cached artwork from itunes.py first
+            artwork_url = await get_cached_artwork('track', track_id)
+            if not artwork_url and track.get('collectionId'):
+                artwork_url = await get_cached_artwork('collection', track.get('collectionId'))
+
+            if not artwork_url:
+                artwork_url = track.get('artworkUrl100')
+
             cover_bytes = await self.artwork_service.get_artwork_bytes(track.get('collectionId') or track_id,
-                                                                       track.get('artworkUrl100'))
+                                                                       artwork_url)
 
         video_url = None
         if isinstance(track_id, str) and track_id.startswith(("yt_", "sc_")):
