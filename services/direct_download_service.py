@@ -7,7 +7,9 @@ import yt_dlp
 import random
 from pathlib import Path
 from core.logger import logger
+from core.http_client import HttpClient
 from utils.messages import send_message, edit_message, safe_delete
+from utils.image_utils import crop_to_square
 from core.config import PROXY, FOOTER
 from telegram import Bot
 
@@ -142,11 +144,25 @@ class DirectDownloadService:
 
             if success and mp3_path:
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آماده‌سازی فایل...*")
+
+                # Download artwork
+                cover_bytes = None
+                thumbnail_url = info.get('thumbnail')
+                if thumbnail_url:
+                    try:
+                        session = await HttpClient.get_session()
+                        async with session.get(thumbnail_url, timeout=15) as resp:
+                            if resp.status == 200:
+                                cover_bytes = await resp.read()
+                                cover_bytes = crop_to_square(cover_bytes)
+                    except Exception as e:
+                        logger.warning(f"Failed to download thumbnail for direct download: {e}")
+
                 # For direct download, track_id is not available, using unique_id as fallback key
                 t_id = f"direct_{unique_id}"
                 lyrics_dict = await lyrics_service.get_lyrics(t_id, track_data.get("trackName", ""), track_data.get("artistName", ""), track_data.get("collectionName"))
                 lyrics_to_tag = (lyrics_dict.get("synced") or lyrics_dict.get("plain")) if lyrics_dict else None
-                self.tagging_service.tag_mp3(mp3_path, track_data, lyrics=lyrics_to_tag)
+                self.tagging_service.tag_mp3(mp3_path, track_data, cover_bytes=cover_bytes, lyrics=lyrics_to_tag)
 
                 track_name = track_data['trackName']
 
