@@ -10,6 +10,8 @@ from core.logger import logger
 from utils.messages import send_message, edit_message, safe_delete
 from core.config import PROXY, FOOTER
 from telegram import Bot
+from core.http_client import HttpClient
+from utils.image_utils import crop_to_square
 
 # ── User‑agent list (Same as youtube crawler) ────────────────────
 USER_AGENTS = [
@@ -129,6 +131,7 @@ class DirectDownloadService:
                             'artistName': info.get('uploader', info.get('artist', 'Unknown')),
                             'collectionName': info.get('album', ''),
                             'releaseDate': info.get('upload_date', '')[:4],
+                            'thumbnail': info.get('thumbnail')
                         }
 
                         files = list(Path(temp_dir).glob("*.mp3"))
@@ -142,11 +145,25 @@ class DirectDownloadService:
 
             if success and mp3_path:
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آماده‌سازی فایل...*")
+
+                # Download and crop artwork if available
+                cover_bytes = None
+                thumbnail_url = track_data.get('thumbnail')
+                if thumbnail_url:
+                    try:
+                        session = await HttpClient.get_session()
+                        async with session.get(thumbnail_url, timeout=30) as resp:
+                            if resp.status == 200:
+                                cover_bytes = await resp.read()
+                                cover_bytes = crop_to_square(cover_bytes)
+                    except Exception as e:
+                        logger.error(f"Error downloading direct artwork: {e}")
+
                 # For direct download, track_id is not available, using unique_id as fallback key
                 t_id = f"direct_{unique_id}"
                 lyrics_dict = await lyrics_service.get_lyrics(t_id, track_data.get("trackName", ""), track_data.get("artistName", ""), track_data.get("collectionName"))
                 lyrics_to_tag = (lyrics_dict.get("synced") or lyrics_dict.get("plain")) if lyrics_dict else None
-                self.tagging_service.tag_mp3(mp3_path, track_data, lyrics=lyrics_to_tag)
+                self.tagging_service.tag_mp3(mp3_path, track_data, cover_bytes=cover_bytes, lyrics=lyrics_to_tag)
 
                 track_name = track_data['trackName']
 
