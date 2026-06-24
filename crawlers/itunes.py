@@ -207,8 +207,10 @@ async def get_cached_artwork(entity_type: str, entity_id: Union[int, str]) -> Op
     if attachments and attachments.get('artworkUrls'):
         # Just return the first mirror artwork if available
         for art in attachments['artworkUrls']:
-            if art.get('source') == 'mirror' or art.get('size') == 'mirror':
-                return extract_file_id(art.get('url'))
+            url = art.get('url')
+            url = art.replace('30x30','600x600x')
+            logger.info(f"Artwork url found: " + url)
+            return url
     return None
 
 
