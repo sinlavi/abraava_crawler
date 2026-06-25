@@ -68,7 +68,7 @@ class HttpClient:
             current_proxy = PROXY if (use_proxy and PROXY and not PROXY.startswith("socks")) else None
 
             try:
-                async with session.request(method, url, headers=headers, proxy=current_proxy, ssl=False, timeout=15, **kwargs) as resp:
+                async with session.request(method, url, headers=headers, proxy=current_proxy, ssl=False, timeout=60, **kwargs) as resp:
                     last_status = resp.status
                     if resp.status == 200:
                         try:

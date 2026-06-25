@@ -204,26 +204,30 @@ class DownloadService:
                 # DUAL UPLOAD: If 320 was downloaded, also convert and upload 192
                 if str(quality_value) == "320":
                     try:
-                        status_msg = await self._update_status(chat_id, status_msg, "🔄 *در حال تبدیل به کیفیت 192kbps...*",
-                                                               status_prefix, is_batch, silent=silent)
+                        async def dual_upload_flow():
+                            nonlocal status_msg
+                            status_msg = await self._update_status(chat_id, status_msg, "🔄 *در حال تبدیل به کیفیت 192kbps...*",
+                                                                   status_prefix, is_batch, silent=silent)
 
-                        mp3_192_path = mp3_path.replace(".mp3", "_192.mp3")
-                        if convert_bitrate(Path(mp3_path), Path(mp3_192_path), "192"):
-                            # Re-tag the converted file
-                            self.tagging_service.tag_mp3(Path(mp3_192_path), track, cover_bytes, lyrics=lyrics_to_tag)
+                            mp3_192_path = mp3_path.replace(".mp3", "_192.mp3")
+                            if convert_bitrate(Path(mp3_path), Path(mp3_192_path), "192"):
+                                # Re-tag the converted file
+                                self.tagging_service.tag_mp3(Path(mp3_192_path), track, cover_bytes, lyrics=lyrics_to_tag)
 
-                            caption_192 = self._build_caption(track, "192")
+                                caption_192 = self._build_caption(track, "192")
 
-                            with open(mp3_192_path, 'rb') as f192:
-                                if not silent:
-                                    await self.bot.send_chat_action(chat_id, "upload_voice")
-                                logger.info(f"Uploading converted 192kbps audio: {track.get('trackName')}")
+                                with open(mp3_192_path, 'rb') as f192:
+                                    if not silent:
+                                        await self.bot.send_chat_action(chat_id, "upload_voice")
+                                    logger.info(f"Uploading converted 192kbps audio: {track.get('trackName')}")
 
-                                msg192 = await self.bot.send_audio(chat_id, audio=f192, caption=caption_192)
-                                if msg192 and track_id:
-                                    await set_mirror('track', str(track_id), 'audioUrl',
-                                                     f'https://api.telegram.org/file/bot<token>/{msg192.audio.file_id}',
-                                                     quality="192")
+                                    msg192 = await self.bot.send_audio(chat_id, audio=f192, caption=caption_192)
+                                    if msg192 and track_id:
+                                        await set_mirror('track', str(track_id), 'audioUrl',
+                                                         f'https://api.telegram.org/file/bot<token>/{msg192.audio.file_id}',
+                                                         quality="192")
+
+                        await asyncio.wait_for(dual_upload_flow(), timeout=300)
                     except Exception as e:
                         logger.error(f"Failed to perform dual quality upload: {e}")
 

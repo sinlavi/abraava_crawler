@@ -9,16 +9,20 @@ class APIClient:
         self.token = token
 
     async def _request(self, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        session = await HttpClient.get_session()
+        url = f"{self.base_url}?action={action}"
         headers = {
             'Authorization': f'Bearer {self.token}',
             'Content-Type': 'application/json'
         }
         try:
-            async with session.post(f"{self.base_url}?action={action}", json=data, headers=headers) as resp:
-                return await resp.json()
+            data_resp, status, is_tech_err = await HttpClient.request_with_methods(
+                "POST", url, json=data, headers=headers
+            )
+            if status == 200 and data_resp:
+                return data_resp
+            return {'success': False, 'message': f"Status {status}", 'is_technical': is_tech_err}
         except Exception as e:
-            logger.error(f"API request failed: {e}")
+            logger.error(f"API request failed for {action}: {e}")
             return {'success': False, 'message': str(e)}
 
     async def register_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
