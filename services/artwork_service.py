@@ -1,14 +1,16 @@
+import os
 import time
 import io
 import logging
 import asyncio
+import aiohttp
 from typing import Optional, Union, Dict, Any, List, Tuple
 from telegram import Bot, Message
 from core.logger import logger
 from core.http_client import HttpClient
 from services.api_client import APIClient
 from crawlers.itunes import set_mirror, get_attachments
-from crawlers.youtube import get_artist_image
+from crawlers.youtube import get_artist_image, get_track_image
 from utils.helpers import get_high_res_artwork
 from utils.image_utils import crop_to_square
 
@@ -120,17 +122,84 @@ class ArtworkService:
             logger.error(f"Failed in send_artwork_photo helper: {e}")
             raise
 
-    async def get_artwork_bytes(self, entity_id: Union[int, str], artwork_url100: str):
-        if entity_id:
-            url = get_high_res_artwork(artwork_url100, 600)
-            if url:
-                session = await HttpClient.get_session()
+    async def get_artwork_bytes(self, entity_id: Union[int, str], artwork_url100: str, title: str = None, artist: str = None):
+        async def get_track_image_with_rotation(t, a):
+            # Wrap synchronous search in executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, get_track_image, t, a)
+
+        if not entity_id:
+            return None
+
+        cache_dir = "cache/artworks"
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f"{entity_id}.jpg")
+
+        # 1. Check local cache
+        if os.path.exists(cache_path):
+            logger.info(f"Using locally cached artwork for {entity_id}")
+            try:
+                with open(cache_path, "rb") as f:
+                    return f.read()
+            except Exception as e:
+                logger.error(f"Error reading artwork cache: {e}")
+
+        # 2. Try download from artwork_url100 (iTunes)
+        artwork_bytes = None
+        url = get_high_res_artwork(artwork_url100, 600)
+        if url:
+            from crawlers.itunes import USER_AGENTS
+            import random
+            for attempt in range(3):
                 try:
-                    async with session.get(url, timeout=30) as resp:
+                    session = await HttpClient.get_session()
+                    # Use professional UA for rotation
+                    headers = {"User-Agent": random.choice(USER_AGENTS)}
+                    async with session.get(url, headers=headers, timeout=30) as resp:
                         if resp.status == 200:
                             artwork_bytes = await resp.read()
-                            if isinstance(entity_id, str) and entity_id.startswith(("yt_", "sc_")):
-                                artwork_bytes = crop_to_square(artwork_bytes)
-                            return artwork_bytes
-                except: pass
+                            break
+                        elif resp.status == 404:
+                            logger.info(f"Artwork {url} not found (404)")
+                            break
+                        else:
+                            raise RuntimeError(f"Failed to download artwork from iTunes URL: HTTP {resp.status}")
+                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                    if attempt < 2:
+                        await asyncio.sleep(2)
+                        continue
+                    raise RuntimeError(f"Connection error downloading artwork: {e}")
+
+        # 3. Fallback to YouTube Music
+        if not artwork_bytes and title and artist:
+            logger.info(f"Falling back to YouTube Music artwork for {title} - {artist}")
+            # Try to get best matching video info first
+            yt_metadata = await get_track_image_with_rotation(title, artist)
+            if yt_metadata:
+                yt_artwork_url = yt_metadata
+                try:
+                    session = await HttpClient.get_session()
+                    async with session.get(yt_artwork_url, timeout=30) as resp:
+                        if resp.status == 200:
+                            artwork_bytes = await resp.read()
+                        elif resp.status != 404:
+                            raise RuntimeError(f"YouTube Music artwork download failed: HTTP {resp.status}")
+                except Exception as e:
+                    if not isinstance(e, RuntimeError):
+                        raise RuntimeError(f"YouTube Music artwork download error: {e}")
+                    raise
+
+        if artwork_bytes:
+            if isinstance(entity_id, str) and entity_id.startswith(("yt_", "sc_")):
+                artwork_bytes = crop_to_square(artwork_bytes)
+
+            # Save to cache
+            try:
+                with open(cache_path, "wb") as f:
+                    f.write(artwork_bytes)
+            except Exception as e:
+                logger.error(f"Failed to save artwork to cache: {e}")
+
+            return artwork_bytes
+
         return None
