@@ -160,10 +160,13 @@ class ArtworkService:
             logger.info(f"Attempting artwork fallback to YouTube Music: {track_name} - {artist_name}")
             try:
                 import crawlers.youtube as yt_crawler
-                if yt_crawler.YT is None:
-                    from ytmusicapi import YTMusic
-                    from core.config import PROXY
-                    yt_crawler.YT = YTMusic(proxies={"https": PROXY, "http": PROXY})
+                from ytmusicapi import YTMusic
+                from core.config import PROXY
+
+                if yt_crawler._YT_PROXIED is None and PROXY:
+                    yt_crawler._YT_PROXIED = YTMusic(proxies={"https": PROXY, "http": PROXY})
+                if yt_crawler._YT_DIRECT is None:
+                    yt_crawler._YT_DIRECT = YTMusic()
 
                 search_query = f"{track_name} {artist_name}"
 
@@ -175,11 +178,14 @@ class ArtworkService:
                 last_error = None
                 for i, ua in enumerate(uas):
                     try:
-                        yt_crawler.YT.headers["User-Agent"] = ua
-                        results = yt_crawler.YT.search(search_query, filter="songs", limit=1)
+                        use_proxy = (i % 2 == 0) if PROXY else False
+                        ytm = yt_crawler._YT_PROXIED if use_proxy else yt_crawler._YT_DIRECT
+
+                        ytm.headers["User-Agent"] = ua
+                        results = ytm.search(search_query, filter="songs", limit=1)
                         break
                     except Exception as e:
-                        logger.debug(f"YTM artwork search method {i+1} failed: {e}")
+                        logger.debug(f"YTM artwork search method {i+1} failed (Proxy: {use_proxy}): {e}")
                         last_error = e
                         await asyncio.sleep(0.1)
 
