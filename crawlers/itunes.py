@@ -123,17 +123,21 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
                         if can_cache:
                             await _itunes_cache.set(endpoint, params, data)
                         return data
-                    elif resp.status >= 500:
-                        raise Exception(f"Server error: {resp.status}")
+                    elif resp.status == 404:
+                        return {"success": True, "results": [], "items": [], "lyrics": None}
+                    else:
+                        raise RuntimeError(f"3rah API error: HTTP {resp.status} for {url}")
             else:
                 async with getattr(session, method.lower())(url, params=params, json=payload, headers=headers,
                                                             ssl=False, proxy=current_proxy, timeout=15) as resp:
                     logger.info(f"3rah Response [{resp.status}]: {url}")
                     if resp.status == 200: return await resp.json()
-                    elif resp.status >= 500:
-                        raise Exception(f"Server error: {resp.status}")
+                    elif resp.status == 404:
+                        return {"success": True, "results": [], "items": [], "lyrics": None}
+                    else:
+                        raise RuntimeError(f"3rah API error: HTTP {resp.status} for {url}")
 
-            # If status is not 200 and not 5xx, don't retry
+            # If status is not 200 and not 404, we've either raised or we should break
             break
 
         except Exception as e:

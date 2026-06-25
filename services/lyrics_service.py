@@ -143,68 +143,75 @@ class LyricsService:
                 logger.error(f"Error pushing lyrics to 3rah API: {e}")
 
     async def _fetch_from_lrclib(self, title, artist, album=None, duration_ms=0):
-        try:
-            from core.http_client import HttpClient
-            session = await HttpClient.get_session()
-            headers = {"User-Agent": "ABRAAVA-Crawler/1.1 (https://3rah.ir)"}
+        # Implementation of 8 methods via User-Agent rotation
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+            "ABRAAVA-Crawler/1.1 (https://3rah.ir)",
+            "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
+        ]
 
-            # 1. Try exact match with duration (best for accuracy)
-            params = {
-                "track_name": title,
-                "artist_name": artist,
-            }
-            if album: params["album_name"] = album
-            if duration_ms: params["duration"] = int(duration_ms / 1000)
+        from core.http_client import HttpClient
+        session = await HttpClient.get_session()
 
-            url = "https://lrclib.net/api/get"
-
+        for method_idx, ua in enumerate(user_agents):
             try:
+                headers = {"User-Agent": ua}
+                # 1. Try exact match with duration (best for accuracy)
+                params = {
+                    "track_name": title,
+                    "artist_name": artist,
+                }
+                if album: params["album_name"] = album
+                if duration_ms: params["duration"] = int(duration_ms / 1000)
+
+                url = "https://lrclib.net/api/get"
+
                 async with session.get(url, params=params, headers=headers, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("instrumental"):
                             return {"synced": "Instrumental", "plain": "Instrumental"}
                         return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
-                    elif resp.status >= 500:
-                        raise RuntimeError(f"LRCLIB API server error: {resp.status}")
-            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                logger.error(f"LRCLIB api/get failed: {e}")
-                raise RuntimeError(f"LRCLIB connection error: {e}")
+                    elif resp.status != 404:
+                         raise RuntimeError(f"LRCLIB API error: HTTP {resp.status} for {url} (Method {method_idx+1})")
 
-            # 2. Try search if direct get fails (usually 404)
-            search_url = "https://lrclib.net/api/search"
-            # Try searching with explicit fields first for better results
-            search_params = {"track_name": title, "artist_name": artist}
-            if album: search_params["album_name"] = album
+                # 2. Try search if direct get fails (usually 404)
+                search_url = "https://lrclib.net/api/search"
+                search_params = {"track_name": title, "artist_name": artist}
+                if album: search_params["album_name"] = album
 
-            results = []
-            try:
+                results = []
                 async with session.get(search_url, params=search_params, headers=headers, timeout=10) as s_resp:
                     if s_resp.status == 200:
                         results = await s_resp.json()
-                    elif s_resp.status >= 500:
-                         raise RuntimeError(f"LRCLIB Search API server error: {s_resp.status}")
+                    elif s_resp.status != 404:
+                         raise RuntimeError(f"LRCLIB Search API error: HTTP {s_resp.status} for {search_url} (Method {method_idx+1})")
 
-                    # Fallback 1: Try without album if album was provided and no results
                     if not results and album:
-                        logger.info(f"LRCLIB search with album failed, trying without album: {title} - {artist}")
                         no_album_params = {"track_name": title, "artist_name": artist}
                         async with session.get(search_url, params=no_album_params, headers=headers, timeout=10) as na_resp:
                             if na_resp.status == 200:
                                 results = await na_resp.json()
 
-                    # Fallback 2: General q search
                     if not results and s_resp.status != 404:
                         general_params = {"q": f"{title} {artist}"}
                         async with session.get(search_url, params=general_params, headers=headers, timeout=10) as g_resp:
                             if g_resp.status == 200:
                                 results = await g_resp.json()
-            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                logger.error(f"LRCLIB search failed: {e}")
-                raise RuntimeError(f"LRCLIB search connection error: {e}")
 
-            if results:
+                # If we got here with 404s, it means we really found nothing with this UA.
+                # Since we want to be sure it doesn't exist, we should try next method if we didn't find anything.
+                if not results:
+                    continue
+
+                if results:
                     best_score = -1
+                    best_match = None
 
                     target_sec = duration_ms / 1000 if duration_ms else 0
 
@@ -230,47 +237,80 @@ class LyricsService:
                         if best_match.get("instrumental"):
                             return {"synced": "Instrumental", "plain": "Instrumental"}
                         return {"synced": best_match.get("syncedLyrics"), "plain": best_match.get("plainLyrics")}
-            return None
-        except Exception as e:
-            if isinstance(e, RuntimeError):
-                raise
-            logger.error(f"Unexpected error fetching lyrics from LRCLIB: {type(e).__name__}: {e}")
-            raise RuntimeError(f"LRCLIB unexpected error: {e}")
+            except Exception as e:
+                if isinstance(e, RuntimeError):
+                    raise
+                logger.debug(f"LRCLIB attempt {method_idx + 1} failed: {e}")
+                if method_idx == len(user_agents) - 1:
+                    raise RuntimeError(f"LRCLIB failed after all methods: {e}")
+                continue
+
+        return None
 
     async def _fetch_from_ytmusic(self, track_id, title, artist):
+        # Rotating headers/proxies logic or use the 8-method metadata extraction
         try:
             track_id = str(track_id)
             video_id = None
             if track_id.startswith("yt_"):
                 video_id = track_id[3:]
             else:
-                # Search for the track on YouTube
+                # Use the new multi-method search from YouTube crawler
+                from crawlers.youtube import search_youtube_track
                 video_id = await search_youtube_track(title, artist, "", "")
 
             if not video_id:
                 logger.warning(f"Could not find YouTube video for {title} - {artist}")
                 return None
 
+            # For fetching the actual lyrics, we could also implement a rotation here.
+            # However, get_watch_playlist and get_lyrics are YTMusic specific.
+            # We'll rotate the headers for these calls if possible.
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+                "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+                "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0"
+            ]
+
             loop = asyncio.get_event_loop()
 
-            # Get watch playlist to find lyrics browse ID
-            watch_playlist = await loop.run_in_executor(
-                self._executor,
-                lambda: self.ytm.get_watch_playlist(video_id)
-            )
+            for ua in user_agents:
+                try:
+                    self.ytm.headers["User-Agent"] = ua
+                    # Get watch playlist to find lyrics browse ID
+                    watch_playlist = await loop.run_in_executor(
+                        self._executor,
+                        lambda: self.ytm.get_watch_playlist(video_id)
+                    )
 
-            lyrics_browse_id = watch_playlist.get('lyrics')
-            if not lyrics_browse_id:
-                logger.info(f"No lyrics found for {title} - {artist} (Video ID: {video_id})")
-                return None
+                    lyrics_browse_id = watch_playlist.get('lyrics')
+                    if not lyrics_browse_id:
+                        logger.info(f"No lyrics found for {title} - {artist} (Video ID: {video_id}) with UA {ua}")
+                        # We should try next UA because maybe this one was blocked or returned different data
+                        continue
 
-            # Fetch the actual lyrics
-            lyrics_data = await loop.run_in_executor(
-                self._executor,
-                lambda: self.ytm.get_lyrics(lyrics_browse_id)
-            )
+                    # Fetch the actual lyrics
+                    lyrics_data = await loop.run_in_executor(
+                        self._executor,
+                        lambda: self.ytm.get_lyrics(lyrics_browse_id)
+                    )
 
-            return {"synced": None, "plain": lyrics_data.get('lyrics')}
+                    if lyrics_data and lyrics_data.get('lyrics'):
+                        return {"synced": None, "plain": lyrics_data.get('lyrics')}
+                except Exception as e:
+                    logger.debug(f"YTMusic fetch attempt with UA {ua} failed: {e}")
+                    # If it's a 404, we might continue, but for others we might want to fail
+                    if "404" in str(e): continue
+                    # To be strict, if one method gives a real error, we might fail or try others.
+                    # Given the 8-method rule, we try all before failing.
+                    continue
+
+            return None
 
         except Exception as e:
             logger.error(f"Error fetching lyrics from YTMusic: {e}")

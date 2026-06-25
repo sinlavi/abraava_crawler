@@ -128,9 +128,9 @@ def _check_proxy() -> Optional[str]:
     return None
 
 
-def _build_search_ydl_opts(method: int, preferred_quality: int) -> dict:
+def _build_search_ydl_opts(method: int, preferred_quality: int = 128) -> dict:
     """
-    Build yt‑dlp options specifically for searching (extract info only).
+    Build yt‑dlp options specifically for searching or extracting info (extract info only).
     """
     opts = dict(COMMON_OPTS)
     opts["quiet"] = True
@@ -454,28 +454,50 @@ def get_artist_image(artist_name):
 
 
 def get_track_image(title, artist):
-    """Get track image from YTMusic with improved error handling"""
-    global YT
-    if YT is None:
+    """Get track image from YouTube using the 8-method search."""
+    # Build search query
+    search_query = f"{title} {artist}".strip()
+
+    errors = []
+    found_404 = False
+
+    # Try each method in order
+    for method in list(SEARCH_METHOD_ORDER):
         try:
-            YT = YTMusic(proxies={"https": PROXY, "http": PROXY})
+            opts = _build_search_ydl_opts(method)
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                # Search query format for yt-dlp
+                search_url = f"ytsearch1:{search_query}"
+                info = ydl.extract_info(search_url, download=False)
+
+                if info and 'entries' in info and info['entries']:
+                    entry = info['entries'][0]
+                    # Try to get highest res thumbnail
+                    thumbnails = entry.get('thumbnails')
+                    if thumbnails:
+                        return thumbnails[-1].get('url')
+                    return entry.get('thumbnail')
+                else:
+                    # Definite "not found" from this method
+                    found_404 = True
+                    continue
+
         except Exception as e:
-            logger.error(f"Failed to initialize YTMusic: {e}")
-            return None
+            err_str = str(e).lower()
+            if "404" in err_str or "unavailable" in err_str:
+                found_404 = True
+                continue
 
-    try:
-        search_query = f"{title} {artist}"
-        search_results = YT.search(search_query, filter="songs", limit=1)
-        if not search_results or not isinstance(search_results, list):
-            return None
+            logger.warning(f"YouTube search method {method} failed: {e}")
+            errors.append(f"Method {method}: {e}")
+            continue
 
-        thumbnails = search_results[0].get('thumbnails')
-        if thumbnails and isinstance(thumbnails, list) and len(thumbnails) > 0:
-            return thumbnails[-1].get('url')
+    if errors:
+        # If we had errors, we can't be sure it doesn't exist
+        raise RuntimeError(f"YouTube search failed with errors: {'; '.join(errors)}")
 
-    except Exception as e:
-        logger.error(f"YTMusic get_track_image error for '{title} - {artist}': {e}")
-
+    # If we only got 404s or no results
     return None
 
 

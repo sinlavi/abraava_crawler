@@ -123,6 +123,11 @@ class ArtworkService:
             raise
 
     async def get_artwork_bytes(self, entity_id: Union[int, str], artwork_url100: str, title: str = None, artist: str = None):
+        async def get_track_image_with_rotation(t, a):
+            # Wrap synchronous search in executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, get_track_image, t, a)
+
         if not entity_id:
             return None
 
@@ -139,34 +144,50 @@ class ArtworkService:
             except Exception as e:
                 logger.error(f"Error reading artwork cache: {e}")
 
-        # 2. Try download from artwork_url100
+        # 2. Try download from artwork_url100 (iTunes)
         artwork_bytes = None
         url = get_high_res_artwork(artwork_url100, 600)
         if url:
-            try:
-                session = await HttpClient.get_session()
-                async with session.get(url, timeout=30) as resp:
-                    if resp.status == 200:
-                        artwork_bytes = await resp.read()
-                    else:
-                        logger.warning(f"Failed to download artwork from iTunes URL: HTTP {resp.status}")
-            except Exception as e:
-                logger.warning(f"Failed to download artwork from iTunes URL: {e}")
+            from crawlers.itunes import USER_AGENTS
+            import random
+            for attempt in range(3):
+                try:
+                    session = await HttpClient.get_session()
+                    # Use professional UA for rotation
+                    headers = {"User-Agent": random.choice(USER_AGENTS)}
+                    async with session.get(url, headers=headers, timeout=30) as resp:
+                        if resp.status == 200:
+                            artwork_bytes = await resp.read()
+                            break
+                        elif resp.status == 404:
+                            logger.info(f"Artwork {url} not found (404)")
+                            break
+                        else:
+                            raise RuntimeError(f"Failed to download artwork from iTunes URL: HTTP {resp.status}")
+                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                    if attempt < 2:
+                        await asyncio.sleep(2)
+                        continue
+                    raise RuntimeError(f"Connection error downloading artwork: {e}")
 
         # 3. Fallback to YouTube Music
         if not artwork_bytes and title and artist:
             logger.info(f"Falling back to YouTube Music artwork for {title} - {artist}")
-            yt_artwork_url = get_track_image(title, artist)
-            if yt_artwork_url:
+            # Try to get best matching video info first
+            yt_metadata = await get_track_image_with_rotation(title, artist)
+            if yt_metadata:
+                yt_artwork_url = yt_metadata
                 try:
                     session = await HttpClient.get_session()
                     async with session.get(yt_artwork_url, timeout=30) as resp:
                         if resp.status == 200:
                             artwork_bytes = await resp.read()
-                        else:
-                            logger.warning(f"Failed to download artwork from YouTube Music: HTTP {resp.status}")
+                        elif resp.status != 404:
+                            raise RuntimeError(f"YouTube Music artwork download failed: HTTP {resp.status}")
                 except Exception as e:
-                    logger.warning(f"Failed to download artwork from YouTube Music: {e}")
+                    if not isinstance(e, RuntimeError):
+                        raise RuntimeError(f"YouTube Music artwork download error: {e}")
+                    raise
 
         if artwork_bytes:
             if isinstance(entity_id, str) and entity_id.startswith(("yt_", "sc_")):
