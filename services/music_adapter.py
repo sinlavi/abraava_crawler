@@ -1,4 +1,5 @@
 import asyncio
+import random
 from typing import List, Dict, Any, Optional
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
@@ -7,7 +8,7 @@ import yt_dlp
 from core.config import SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, PROXY
 from core.logger import logger
 
-YT_METADATA_METHODS = [1, 2, 3]
+YT_METADATA_METHODS = [8, 2, 3, 4, 5, 6, 7, 1]
 SC_METADATA_METHODS = [1, 2]
 
 class MusicAdapter:
@@ -281,9 +282,11 @@ class MusicAdapter:
             return []
 
     def _get_ydl_opts(self, method, proxy=None):
-        opts = {'quiet': True, 'no_check_certificate': True, 'extract_flat': False, 'proxy': PROXY}
-        if method == 3:
-            opts['extractor_args'] = {"youtube": {"player_client": ["web", "mweb", "android_vr"]}}
+        from crawlers.youtube import _build_opts
+        # Reuse robust options from youtube crawler
+        opts = _build_opts(method, "", 128)
+        opts['extract_flat'] = False
+        opts['skip_download'] = True
         return opts
 
     async def get_yt_track(self, video_id: str) -> Optional[Dict[str, Any]]:
@@ -293,6 +296,8 @@ class MusicAdapter:
         url = f"https://www.youtube.com/watch?v={video_id}"
 
         loop = asyncio.get_event_loop()
+        last_error = None
+        is_404 = False
 
         for method in list(YT_METADATA_METHODS):
             try:
@@ -321,9 +326,18 @@ class MusicAdapter:
                         return result
             except Exception as e:
                 logger.debug(f"YT Metadata method {method} failed: {e}")
+                last_error = e
+                if "IncompleteRead" in str(e) or "Status code 404" in str(e) or "this video is unavailable" in str(e).lower():
+                    is_404 = True
+                    break # Confirmed not found
+
                 if method in YT_METADATA_METHODS:
                     YT_METADATA_METHODS.remove(method)
                     YT_METADATA_METHODS.append(method)
+
+        if is_404:
+             logger.warning(f"YouTube video {video_id} confirmed not found or unavailable.")
+             return None
 
         # Final Fallback to YTM API
         try:
@@ -339,8 +353,13 @@ class MusicAdapter:
                     "trackTimeMillis": int(details.get("lengthSeconds", 0)) * 1000,
                     "trackViewUrl": url
                 }
-        except: pass
-        return None
+        except Exception as e:
+             last_error = e
+
+        # If we reached here without a result and it wasn't a confirmed 404
+        msg = f"Ultimate technical failure fetching YouTube metadata for {video_id}: {last_error}"
+        logger.error(msg)
+        raise Exception(msg)
 
     async def get_sc_track(self, sc_id: str) -> Optional[Dict[str, Any]]:
         global SC_METADATA_METHODS
@@ -355,10 +374,18 @@ class MusicAdapter:
             url = f"https://soundcloud.com/{sc_id}"
 
         loop = asyncio.get_event_loop()
+        last_error = None
 
         for method in list(SC_METADATA_METHODS):
             try:
-                opts = {'quiet': True, 'no_check_certificate': True, 'proxy': PROXY}
+                # Use randomized User-Agents even for SC for better luck
+                from core.http_client import USER_AGENTS
+                opts = {
+                    'quiet': True,
+                    'no_check_certificate': True,
+                    'proxy': PROXY,
+                    'http_headers': {'User-Agent': random.choice(USER_AGENTS)}
+                }
 
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
@@ -373,10 +400,18 @@ class MusicAdapter:
                         return result
             except Exception as e:
                 logger.debug(f"SC Metadata method {method} failed: {e}")
+                last_error = e
+                if "404" in str(e):
+                    logger.warning(f"SoundCloud track {sc_id} confirmed not found.")
+                    return None
+
                 if method in SC_METADATA_METHODS:
                     SC_METADATA_METHODS.remove(method)
                     SC_METADATA_METHODS.append(method)
-        return None
+
+        msg = f"Ultimate technical failure fetching SoundCloud metadata for {sc_id}: {last_error}"
+        logger.error(msg)
+        raise Exception(msg)
 
     async def get_yt_album(self, browse_id: str) -> Optional[Dict[str, Any]]:
         loop = asyncio.get_event_loop()

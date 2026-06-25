@@ -93,61 +93,33 @@ async def fetch_itunes(endpoint: str, params: dict = None, bypass_cache: bool = 
 
     if OFFLINE_MODE: return None
 
-    session = await HttpClient.get_session()
-
     api_path = f"/{endpoint}" if not endpoint.startswith("/") else endpoint
     url = f"{ITUNES_BASE_URL}{api_path}"
 
     headers = {
-        "User-Agent": random.choice(USER_AGENTS),
         "Authorization": f"Bearer {API_TOKEN}"
     }
     logger.info(f"3rah Request [{method}]: {url} - Params: {params}")
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # Note: HttpClient session already uses ProxyConnector if PROXY is SOCKS
-            # We only pass proxy to session call if it's an HTTP proxy
-            current_proxy = PROXY if PROXY and not PROXY.startswith("socks") else None
-            if method == "GET":
-                async with session.get(url, params=params, headers=headers, ssl=False, proxy=current_proxy, timeout=15) as resp:
-                    logger.info(f"3rah Response [{resp.status}]: {url}")
-                    if resp.status == 200:
-                        try:
-                            data = await resp.json()
-                        except:
-                            text = await resp.text()
-                            data = json.loads(text)
+    # Use multi-method request for better reliability
+    data, status, is_tech_err = await HttpClient.request_with_methods(
+        method, url, params=params, json=payload, headers=headers
+    )
 
-                        if can_cache:
-                            await _itunes_cache.set(endpoint, params, data)
-                        return data
-                    elif resp.status == 404:
-                        return {"success": True, "results": [], "items": [], "lyrics": None}
-                    else:
-                        raise RuntimeError(f"3rah API error: HTTP {resp.status} for {url}")
-            else:
-                async with getattr(session, method.lower())(url, params=params, json=payload, headers=headers,
-                                                            ssl=False, proxy=current_proxy, timeout=15) as resp:
-                    logger.info(f"3rah Response [{resp.status}]: {url}")
-                    if resp.status == 200: return await resp.json()
-                    elif resp.status == 404:
-                        return {"success": True, "results": [], "items": [], "lyrics": None}
-                    else:
-                        raise RuntimeError(f"3rah API error: HTTP {resp.status} for {url}")
+    if status == 200 and data:
+        if isinstance(data, bytes):
+            data = json.loads(data.decode())
+        if can_cache:
+            await _itunes_cache.set(endpoint, params, data)
+        return data
 
-            # If status is not 200 and not 404, we've either raised or we should break
-            break
+    if is_tech_err:
+        logger.error(f"3rah fetch failed with technical error: {status} for {url}")
+        # Returning None indicates technical error (consistent with design)
+        return None
 
-        except Exception as e:
-            logger.warning(f"3rah fetch attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2 * (attempt + 1))
-            else:
-                logger.error(f"3rah fetch failed after {max_retries} attempts: {e}")
-
-    return None
+    logger.warning(f"3rah fetch returned status {status} (Not Found?) for {url}")
+    return {"success": False, "status": status}
 
 
 async def search_itunes(term: str, entity: Optional[str] = None, limit: int = 50, official: bool = False, quality: str = None) -> Optional[
@@ -230,12 +202,15 @@ async def get_cached_preview(track_id: Union[int, str]) -> Optional[str]:
 
 async def get_lyrics(track_id: Union[int, str]) -> Optional[Dict[str, Any]]:
     logger.info(f"Checking lyrics for {track_id}")
-    return await fetch_itunes("lyrics/get", params={"id": str(track_id)})
+    data = await fetch_itunes("lyrics/get", params={"id": str(track_id)})
+    if data and data.get("success") and "lyrics" in data:
+        return data["lyrics"]
+    return None
 
 
-async def set_lyrics(track_id: Union[int, str], lyrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    logger.info(f"Setting lyrics for {track_id}")
-    return await fetch_itunes("lyrics/save", method="POST", payload={"id": str(track_id), "lyrics": lyrics})
+async def set_lyrics(track_id: Union[int, str], lyrics: Dict[str, Any], lyrics_type: str = "unsynced") -> Optional[Dict[str, Any]]:
+    logger.info(f"Setting lyrics for {track_id} (Type: {lyrics_type})")
+    return await fetch_itunes("lyrics/save", method="POST", payload={"id": str(track_id), "lyrics": lyrics, "type": lyrics_type})
 
 
 async def save_metadata(entity_type: str, data: Union[Dict, List]) -> Optional[Dict[str, Any]]:

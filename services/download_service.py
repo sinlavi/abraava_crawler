@@ -12,6 +12,7 @@ from models.schemas import DownloadQuality
 from crawlers.utils import get_track, get_or_crawl_collection, get_or_crawl_collection_tracks
 from crawlers.youtube import search_youtube_track, download_audio
 from crawlers.itunes import get_cached_audio, set_mirror, get_cached_artwork, get_attachments, update_download_status
+from utils.audio_utils import convert_bitrate
 from utils.helpers import get_high_res_artwork, format_duration, generate_deep_link
 from utils.messages import send_message, edit_message, safe_delete
 
@@ -125,8 +126,8 @@ class DownloadService:
 
             cover_bytes = await self.artwork_service.get_artwork_bytes(track.get('collectionId') or track_id,
                                                                        artwork_url,
-                                                                       title=track.get('trackName'),
-                                                                       artist=track.get('artistName'))
+                                                                       track_name=track.get('trackName'),
+                                                                       artist_name=track.get('artistName'))
 
         video_url = None
         if isinstance(track_id, str) and track_id.startswith(("yt_", "sc_")):
@@ -135,7 +136,7 @@ class DownloadService:
 
         if not video_url:
             if download_id:
-                await update_download_status(download_id, "downloading", percent=40)
+                await update_download_status(download_id, "downloading", percent=25)
             status_msg = await self._update_status(chat_id, status_msg, "🔍 *در حال جستجوی منبع با کیفیت...*",
                                                    status_prefix, is_batch, silent=silent)
             logger.info(f"Searching YouTube for track {track_id}: {track.get('trackName')} - {track.get('artistName')}")
@@ -156,7 +157,7 @@ class DownloadService:
                     self.album_tracker.start_track(user_id, collection_id, track.get("trackName", ""))
 
                 if download_id:
-                    await update_download_status(download_id, "downloading", percent=70)
+                    await update_download_status(download_id, "downloading", percent=40)
                 status_msg = await self._update_status(chat_id, status_msg,
                                                        f"⏳ *در حال دانلود با کیفیت {quality_value}kbps...*",
                                                        status_prefix, is_batch, silent=silent)
@@ -167,19 +168,25 @@ class DownloadService:
 
                 temp_dir = os.path.dirname(mp3_path)
                 if download_id:
-                    await update_download_status(download_id, "downloading", percent=75)
+                    await update_download_status(download_id, "downloading", percent=70)
                 lyrics_dict = await lyrics_service.get_lyrics(track_id, track.get("trackName", ""),
                                                               track.get("artistName", ""), track.get("collectionName"),
                                                               duration_ms=duration_ms)
+
+                if lyrics_dict is None:
+                     msg = f"Technical error fetching lyrics for {track_id}"
+                     logger.error(msg)
+                     raise Exception(msg)
+
                 if download_id:
-                    await update_download_status(download_id, "downloading", percent=80)
+                    await update_download_status(download_id, "downloading", percent=75)
                 status_msg = await self._update_status(chat_id, status_msg, "🏷️ *در حال تگ‌گذاری فایل...*",
                                                        status_prefix, is_batch, silent=silent)
                 lyrics_to_tag = (lyrics_dict.get("synced") or lyrics_dict.get("plain")) if lyrics_dict else None
                 self.tagging_service.tag_mp3(Path(mp3_path), track, cover_bytes, lyrics=lyrics_to_tag)
 
                 if download_id:
-                    await update_download_status(download_id, "downloading", percent=95)
+                    await update_download_status(download_id, "downloading", percent=90)
                 status_msg = await self._update_status(chat_id, status_msg, "☁️ *در حال آپلود روی سرورهای ابری...*",
                                                        status_prefix, is_batch, silent=silent)
 
@@ -193,6 +200,32 @@ class DownloadService:
                         await set_mirror('track', str(track_id), 'audioUrl',
                                          f'https://api.telegram.org/file/bot<token>/{msg.audio.file_id}',
                                          quality=quality_value)
+
+                # DUAL UPLOAD: If 320 was downloaded, also convert and upload 192
+                if str(quality_value) == "320":
+                    try:
+                        status_msg = await self._update_status(chat_id, status_msg, "🔄 *در حال تبدیل به کیفیت 192kbps...*",
+                                                               status_prefix, is_batch, silent=silent)
+
+                        mp3_192_path = mp3_path.replace(".mp3", "_192.mp3")
+                        if convert_bitrate(Path(mp3_path), Path(mp3_192_path), "192"):
+                            # Re-tag the converted file
+                            self.tagging_service.tag_mp3(Path(mp3_192_path), track, cover_bytes, lyrics=lyrics_to_tag)
+
+                            caption_192 = self._build_caption(track, "192")
+
+                            with open(mp3_192_path, 'rb') as f192:
+                                if not silent:
+                                    await self.bot.send_chat_action(chat_id, "upload_voice")
+                                logger.info(f"Uploading converted 192kbps audio: {track.get('trackName')}")
+
+                                msg192 = await self.bot.send_audio(chat_id, audio=f192, caption=caption_192)
+                                if msg192 and track_id:
+                                    await set_mirror('track', str(track_id), 'audioUrl',
+                                                     f'https://api.telegram.org/file/bot<token>/{msg192.audio.file_id}',
+                                                     quality="192")
+                    except Exception as e:
+                        logger.error(f"Failed to perform dual quality upload: {e}")
 
                 file_size = os.path.getsize(mp3_path)
                 await self.api_client.log_download(user_id, str(track_id), track.get('trackName', ''),

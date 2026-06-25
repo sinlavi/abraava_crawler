@@ -53,7 +53,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
             raise Exception("Track data not found")
 
         track = track_data["results"][0]
-        await update_download_status(download_id, "downloading", percent=10)
+        await update_download_status(download_id, "downloading", percent=5)
 
         # 2. Upload Artwork
         artwork_url = get_high_res_artwork(track.get("artworkUrl100"), 400)
@@ -69,13 +69,13 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
                         # Adapt send_artwork_photo if needed, but for now we follow the goal of hardcoding target chat
                         await bot.send_photo(TARGET_CHANNEL_ID, photo=artwork_bytes, caption=caption)
 
-        await update_download_status(download_id, "downloading", percent=20)
+        await update_download_status(download_id, "downloading", percent=10)
 
         # 3. Upload Preview
         if track.get("previewUrl"):
             await send_voice_preview(bot, TARGET_CHANNEL_ID, track_id, user_id, silent=True)
 
-        await update_download_status(download_id, "downloading", percent=30)
+        await update_download_status(download_id, "downloading", percent=15)
 
         # 4. Download and Send Audio
         _, success = await download_service.download_and_send_track(
@@ -118,7 +118,6 @@ async def run_crawler():
         download_service = DownloadService(bot, api_client, artwork_service,
                                            tagging_service, error_notifier, album_tracker, download_rate_limiter)
 
-        await lyrics_service.init_db()
         logger.info("ABRAAVA Crawler initialized and starting poll loop...")
 
         # Reset stuck downloads (downloading -> pending)

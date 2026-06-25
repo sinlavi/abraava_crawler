@@ -1,6 +1,5 @@
-import aiosqlite
 import asyncio
-import aiohttp
+import random
 from ytmusicapi import YTMusic
 from core.config import CACHE_DIR, PROXY
 import os
@@ -38,180 +37,148 @@ class LyricsService:
             logger.info(f"Adding Cookie header from: {cookies_path}")
             self.ytm.headers["Cookie"] = cookie_header
 
-        self.db_path = os.path.join(CACHE_DIR, "lyrics.db")
         self._executor = ThreadPoolExecutor(max_workers=5)
 
-        if not os.path.exists(CACHE_DIR):
-            os.makedirs(CACHE_DIR)
-
-    async def init_db(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            # Check if synced_lyrics column exists (for migration)
-            cursor = await db.execute("PRAGMA table_info(lyrics)")
-            columns = await cursor.fetchall()
-            has_synced = any(col[1] == 'synced_lyrics' for col in columns)
-
-            if not has_synced and columns:
-                # Simple migration: drop and recreate since it's just a cache
-                await db.execute("DROP TABLE lyrics")
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS lyrics (
-                    track_id TEXT PRIMARY KEY,
-                    synced_lyrics TEXT,
-                    plain_lyrics TEXT,
-                    title TEXT,
-                    artist TEXT
-                )
-            """)
-            await db.commit()
-
     async def get_lyrics(self, track_id, title, artist, album=None, duration_ms=0):
-        # Ensure track_id is a string
+        """
+        Prioritized lyrics fetching strategy:
+        1. Local Cache
+        2. 3rah Central API
+        3. LRCLIB (if not found on 3rah)
+        4. YTMusic (if not found on LRCLIB)
+        """
         track_id = str(track_id)
-        logger.info(f"Retrieving lyrics for: {title} - {artist} (ID: {track_id}, Duration: {duration_ms}ms)")
+        logger.info(f"Retrieving lyrics for: {title} - {artist} (ID: {track_id})")
 
-        # 1. Check Local Cache
-        cached_lyrics = await self._get_cached_lyrics(track_id)
-        if cached_lyrics and (cached_lyrics.get("synced") or "Instrumental" in str(cached_lyrics.get("plain"))):
-            logger.info(f"Synced or Instrumental lyrics found in local cache for {track_id}")
-            return cached_lyrics
+        # 1. 3rah API Check (Central Cache)
+        central_lyrics = None
+        central_success = False
+        try:
+            logger.info(f"Checking 3rah central API for lyrics (ID: {track_id})")
+            # get_3rah_lyrics should return the full response or at least include 'success'
+            # fetch_itunes already handles errors, but if it returns None it's an error.
+            from crawlers.itunes import fetch_itunes
+            resp = await fetch_itunes("lyrics/get", params={"id": track_id})
 
-        # 2. Check 3rah API (Central Cache)
-        logger.info(f"Checking 3rah central API for lyrics (ID: {track_id})")
-        resp = await get_3rah_lyrics(track_id)
+            if resp is None: # Technical error
+                msg = f"Technical error fetching from 3rah API for {track_id}"
+                logger.error(msg)
+                raise Exception(msg)
 
-        if resp is None:
-            raise RuntimeError("Failed to fetch lyrics from 3rah API (Network Error)")
+            if resp.get("success"):
+                central_success = True
+                central_lyrics = resp.get("lyrics")
+                if central_lyrics and (central_lyrics.get("synced") or central_lyrics.get("plain")):
+                    logger.info(f"Lyrics found in 3rah API for {track_id}")
+                    return central_lyrics
+            else:
+                # 3rah API success: False usually means not found in this context,
+                # but let's be safe and only proceed if it's not a technical error (already handled by fetch_itunes returning None)
+                logger.warning(f"3rah API returned success: False for {track_id}. Proceeding to fallbacks.")
+        except Exception as e:
+            logger.error(f"Error checking 3rah API: {e}")
+            raise Exception(f"Technical error checking 3rah API: {e}")
 
-        if not resp.get("success"):
-            raise RuntimeError(f"3rah API reported failure: {resp.get('error', 'Unknown error')}")
-
-        central_lyrics = resp.get("lyrics")
-        if central_lyrics and (central_lyrics.get("synced") or central_lyrics.get("plain")):
-            logger.info(f"Lyrics found in 3rah API for {track_id}")
-            # Cache locally for faster subsequent access
-            await self._cache_lyrics(track_id, central_lyrics, title, artist, push_to_central=False)
-            return central_lyrics
-
-        # 3. Fetch from LRCLIB
-        logger.info(f"3rah API has no lyrics, crawling LRCLIB: {title} - {artist}")
+        # If we reached here, 3rah API was successful but didn't have lyrics. Proceed to fallbacks.
+        # 3. LRCLIB Fallback
+        logger.info(f"Lyrics not on 3rah, trying LRCLIB: {title} - {artist}")
         lyrics_dict = await self._fetch_from_lrclib(title, artist, album, duration_ms)
 
-        # 4. Fallback to YTMusic (only if LRCLIB has no lyrics)
+        if lyrics_dict is None:
+            msg = f"Technical error fetching from LRCLIB for {track_id}"
+            logger.error(msg)
+            raise Exception(msg)
+
+        # 4. YTMusic Fallback
         if not lyrics_dict or (not lyrics_dict.get("synced") and not lyrics_dict.get("plain")):
-            logger.info(f"LRCLIB has no lyrics, falling back to YTMusic: {title} - {artist}")
+            logger.info(f"LRCLIB returned no lyrics, trying YTMusic: {title} - {artist}")
             lyrics_dict = await self._fetch_from_ytmusic(track_id, title, artist)
 
+            if lyrics_dict is None:
+                msg = f"Technical error fetching from YTMusic for {track_id}"
+                logger.error(msg)
+                raise Exception(msg)
+
         if lyrics_dict and (lyrics_dict.get("synced") or lyrics_dict.get("plain")):
-            logger.info(f"Lyrics successfully crawled for {track_id}")
-            # Cache it (both locally and on 3rah API)
-            await self._cache_lyrics(track_id, lyrics_dict, title, artist)
+            logger.info(f"Lyrics successfully crawled from fallbacks for {track_id}")
+            # Sync to central 3rah API (since it was missing there)
+            await self._sync_to_central(track_id, lyrics_dict)
             return lyrics_dict
 
-        # Final fallback: Mark as Not exists
-        logger.warning(f"No lyrics found for {track_id} from any source. Marking as Instrumental/Not exists.")
-        lyrics_dict = {"synced": "Instrumental/Not exists", "plain": "Instrumental/Not exists"}
-        # Cache the "not found" state
-        await self._cache_lyrics(track_id, lyrics_dict, title, artist)
+        return None # No lyrics found anywhere
 
-        return lyrics_dict
+    async def _sync_to_central(self, track_id, lyrics_dict):
+        try:
+            logger.info(f"Pushing lyrics for {track_id} to 3rah central API")
 
-    async def _get_cached_lyrics(self, track_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT synced_lyrics, plain_lyrics FROM lyrics WHERE track_id = ?", (str(track_id),)) as cursor:
-                row = await cursor.fetchone()
-                return {"synced": row[0], "plain": row[1]} if row else None
+            # Determine type
+            lyrics_type = "synced" if lyrics_dict.get("synced") else "unsynced"
 
-    async def _cache_lyrics(self, track_id, lyrics_dict, title, artist, push_to_central=True):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO lyrics (track_id, synced_lyrics, plain_lyrics, title, artist) VALUES (?, ?, ?, ?, ?)",
-                (str(track_id), lyrics_dict.get("synced"), lyrics_dict.get("plain"), title, artist)
-            )
-            await db.commit()
-
-        if push_to_central:
-            try:
-                logger.info(f"Pushing lyrics for {track_id} to 3rah central API")
-                result = await set_3rah_lyrics(track_id, lyrics_dict)
-                if result and result.get("success"):
-                    logger.info(f"Successfully synced lyrics for {track_id} to 3rah API")
-                else:
-                    logger.warning(f"Failed to sync lyrics for {track_id} to 3rah API: {result}")
-            except Exception as e:
-                logger.error(f"Error pushing lyrics to 3rah API: {e}")
+            result = await set_3rah_lyrics(track_id, lyrics_dict, lyrics_type=lyrics_type)
+            if result and result.get("success"):
+                logger.info(f"Successfully synced lyrics for {track_id} to 3rah API")
+            else:
+                logger.warning(f"Failed to sync lyrics for {track_id} to 3rah API: {result}")
+        except Exception as e:
+            logger.error(f"Error pushing lyrics to 3rah API: {e}")
 
     async def _fetch_from_lrclib(self, title, artist, album=None, duration_ms=0):
-        # Implementation of 8 methods via User-Agent rotation
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
-            "ABRAAVA-Crawler/1.1 (https://3rah.ir)",
-            "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
-        ]
+        try:
+            from core.http_client import HttpClient
 
-        from core.http_client import HttpClient
-        session = await HttpClient.get_session()
+            # 1. Try exact match with duration (best for accuracy)
+            params = {"track_name": title, "artist_name": artist}
+            if album: params["album_name"] = album
+            if duration_ms: params["duration"] = int(duration_ms / 1000)
 
-        for method_idx, ua in enumerate(user_agents):
-            try:
-                headers = {"User-Agent": ua}
-                # 1. Try exact match with duration (best for accuracy)
-                params = {
-                    "track_name": title,
-                    "artist_name": artist,
-                }
-                if album: params["album_name"] = album
-                if duration_ms: params["duration"] = int(duration_ms / 1000)
+            url = "https://lrclib.net/api/get"
+            data, status, is_tech_err = await HttpClient.request_with_methods("GET", url, params=params)
 
-                url = "https://lrclib.net/api/get"
+            if status == 200 and data:
+                if data.get("instrumental"):
+                    return {"synced": "Instrumental", "plain": "Instrumental"}
+                return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
+            elif is_tech_err:
+                msg = f"Technical error in LRCLIB direct get (Status: {status})"
+                logger.error(msg)
+                raise Exception(msg)
 
-                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("instrumental"):
-                            return {"synced": "Instrumental", "plain": "Instrumental"}
-                        return {"synced": data.get("syncedLyrics"), "plain": data.get("plainLyrics")}
-                    elif resp.status != 404:
-                         raise RuntimeError(f"LRCLIB API error: HTTP {resp.status} for {url} (Method {method_idx+1})")
+            # 2. Try search if direct get returns 404
+            search_url = "https://lrclib.net/api/search"
+            search_params = {"track_name": title, "artist_name": artist}
+            if album: search_params["album_name"] = album
 
-                # 2. Try search if direct get fails (usually 404)
-                search_url = "https://lrclib.net/api/search"
-                search_params = {"track_name": title, "artist_name": artist}
-                if album: search_params["album_name"] = album
+            data, status, is_tech_err = await HttpClient.request_with_methods("GET", search_url, params=search_params)
 
-                results = []
-                async with session.get(search_url, params=search_params, headers=headers, timeout=10) as s_resp:
-                    if s_resp.status == 200:
-                        results = await s_resp.json()
-                    elif s_resp.status != 404:
-                         raise RuntimeError(f"LRCLIB Search API error: HTTP {s_resp.status} for {search_url} (Method {method_idx+1})")
+            results = data if status == 200 and data else []
+            if is_tech_err:
+                msg = f"Technical error in LRCLIB search (Status: {status})"
+                logger.error(msg)
+                raise Exception(msg)
 
-                    if not results and album:
-                        no_album_params = {"track_name": title, "artist_name": artist}
-                        async with session.get(search_url, params=no_album_params, headers=headers, timeout=10) as na_resp:
-                            if na_resp.status == 200:
-                                results = await na_resp.json()
+            # Fallback 1: Try without album if album was provided and no results
+            if not results and album:
+                logger.info(f"LRCLIB search with album failed, trying without album: {title} - {artist}")
+                no_album_params = {"track_name": title, "artist_name": artist}
+                data, status, is_tech_err = await HttpClient.request_with_methods("GET", search_url, params=no_album_params)
+                results = data if status == 200 and data else []
+                if is_tech_err:
+                    msg = f"Technical error in LRCLIB search no-album (Status: {status})"
+                    logger.error(msg)
+                    raise Exception(msg)
 
-                    if not results and s_resp.status != 404:
-                        general_params = {"q": f"{title} {artist}"}
-                        async with session.get(search_url, params=general_params, headers=headers, timeout=10) as g_resp:
-                            if g_resp.status == 200:
-                                results = await g_resp.json()
+            # Fallback 2: General q search
+            if not results:
+                general_params = {"q": f"{title} {artist}"}
+                data, status, is_tech_err = await HttpClient.request_with_methods("GET", search_url, params=general_params)
+                results = data if status == 200 and data else []
+                if is_tech_err:
+                    msg = f"Technical error in LRCLIB general search (Status: {status})"
+                    logger.error(msg)
+                    raise Exception(msg)
 
-                # If we got here with 404s, it means we really found nothing with this UA.
-                # Since we want to be sure it doesn't exist, we should try next method if we didn't find anything.
-                if not results:
-                    continue
-
-                if results:
+            if results:
                     best_score = -1
-                    best_match = None
 
                     target_sec = duration_ms / 1000 if duration_ms else 0
 
@@ -237,83 +204,58 @@ class LyricsService:
                         if best_match.get("instrumental"):
                             return {"synced": "Instrumental", "plain": "Instrumental"}
                         return {"synced": best_match.get("syncedLyrics"), "plain": best_match.get("plainLyrics")}
-            except Exception as e:
-                if isinstance(e, RuntimeError):
-                    raise
-                logger.debug(f"LRCLIB attempt {method_idx + 1} failed: {e}")
-                if method_idx == len(user_agents) - 1:
-                    raise RuntimeError(f"LRCLIB failed after all methods: {e}")
-                continue
-
-        return None
+            return {} # Not found
+        except Exception as e:
+            logger.error(f"Error fetching lyrics from LRCLIB: {type(e).__name__}: {e}")
+            return None # None indicates technical error
 
     async def _fetch_from_ytmusic(self, track_id, title, artist):
-        # Rotating headers/proxies logic or use the 8-method metadata extraction
-        try:
-            track_id = str(track_id)
-            video_id = None
-            if track_id.startswith("yt_"):
-                video_id = track_id[3:]
-            else:
-                # Use the new multi-method search from YouTube crawler
-                from crawlers.youtube import search_youtube_track
-                video_id = await search_youtube_track(title, artist, "", "")
+        track_id = str(track_id)
+        video_id = None
+        if track_id.startswith("yt_"):
+            video_id = track_id[3:]
+        else:
+            # Search for the track on YouTube
+            video_id = await search_youtube_track(title, artist, "", "")
 
-            if not video_id:
-                logger.warning(f"Could not find YouTube video for {title} - {artist}")
-                return None
+        if not video_id:
+            logger.warning(f"Could not find YouTube video for {title} - {artist}")
+            return {}
 
-            # For fetching the actual lyrics, we could also implement a rotation here.
-            # However, get_watch_playlist and get_lyrics are YTMusic specific.
-            # We'll rotate the headers for these calls if possible.
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
-                "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
-                "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0"
-            ]
+        from core.http_client import USER_AGENTS
+        uas = list(USER_AGENTS)
+        random.shuffle(uas)
 
-            loop = asyncio.get_event_loop()
+        last_error = None
+        for i, ua in enumerate(uas):
+            try:
+                self.ytm.headers["User-Agent"] = ua
+                loop = asyncio.get_event_loop()
 
-            for ua in user_agents:
-                try:
-                    self.ytm.headers["User-Agent"] = ua
-                    # Get watch playlist to find lyrics browse ID
-                    watch_playlist = await loop.run_in_executor(
-                        self._executor,
-                        lambda: self.ytm.get_watch_playlist(video_id)
-                    )
+                # Get watch playlist to find lyrics browse ID
+                watch_playlist = await loop.run_in_executor(
+                    self._executor,
+                    lambda: self.ytm.get_watch_playlist(video_id)
+                )
 
-                    lyrics_browse_id = watch_playlist.get('lyrics')
-                    if not lyrics_browse_id:
-                        logger.info(f"No lyrics found for {title} - {artist} (Video ID: {video_id}) with UA {ua}")
-                        # We should try next UA because maybe this one was blocked or returned different data
-                        continue
+                lyrics_browse_id = watch_playlist.get('lyrics')
+                if not lyrics_browse_id:
+                    logger.info(f"No lyrics found for {title} - {artist} (Video ID: {video_id})")
+                    return {}
 
-                    # Fetch the actual lyrics
-                    lyrics_data = await loop.run_in_executor(
-                        self._executor,
-                        lambda: self.ytm.get_lyrics(lyrics_browse_id)
-                    )
+                # Fetch the actual lyrics
+                lyrics_data = await loop.run_in_executor(
+                    self._executor,
+                    lambda: self.ytm.get_lyrics(lyrics_browse_id)
+                )
 
-                    if lyrics_data and lyrics_data.get('lyrics'):
-                        return {"synced": None, "plain": lyrics_data.get('lyrics')}
-                except Exception as e:
-                    logger.debug(f"YTMusic fetch attempt with UA {ua} failed: {e}")
-                    # If it's a 404, we might continue, but for others we might want to fail
-                    if "404" in str(e): continue
-                    # To be strict, if one method gives a real error, we might fail or try others.
-                    # Given the 8-method rule, we try all before failing.
-                    continue
+                return {"synced": None, "plain": lyrics_data.get('lyrics')} if lyrics_data.get('lyrics') else {}
+            except Exception as e:
+                logger.debug(f"YTMusic lyrics method {i+1} failed: {e}")
+                last_error = e
+                await asyncio.sleep(0.3)
 
-            return None
-
-        except Exception as e:
-            logger.error(f"Error fetching lyrics from YTMusic: {e}")
-            raise RuntimeError(f"YTMusic lyrics fetch failed: {e}")
+        logger.error(f"All 8 methods failed for YTMusic lyrics: {last_error}")
+        return None # Technical error
 
 lyrics_service = LyricsService()
