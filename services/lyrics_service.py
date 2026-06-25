@@ -225,7 +225,7 @@ class LyricsService:
             logger.warning(f"Could not find YouTube video for {title} - {artist}")
             return {}
 
-        from core.http_client import USER_AGENTS
+        from core.config import USER_AGENTS
         uas = list(USER_AGENTS)
         random.shuffle(uas)
 

@@ -153,7 +153,7 @@ async def run_crawler():
                     task = asyncio.create_task(process_queue_item(bot, item, download_service, artwork_service, user_id))
                     tasks.append(task)
                     # Stagger task start
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)
 
                 if tasks:
                     await asyncio.gather(*tasks)
