@@ -84,7 +84,7 @@ class ArtworkService:
                 from core.config import PROXY
                 current_proxy = PROXY if PROXY and not PROXY.startswith("socks") else None
                 session = await HttpClient.get_session()
-                async with session.get(final_url, timeout=60, proxy=current_proxy) as resp:
+                async with session.get(final_url, timeout=30, proxy=current_proxy) as resp:
                     if resp.status == 200:
                         artwork_bytes = await resp.read()
                         if isinstance(entity_id, str) and entity_id.startswith(("yt_", "sc_")):
