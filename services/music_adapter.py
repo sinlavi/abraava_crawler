@@ -9,7 +9,9 @@ from core.config import SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, PROXY
 from core.logger import logger
 
 YT_METADATA_METHODS = [8, 2, 3, 4, 5, 6, 7, 1]
+YT_METADATA_METHODS_LOCK = asyncio.Lock()
 SC_METADATA_METHODS = [1, 2]
+SC_METADATA_METHODS_LOCK = asyncio.Lock()
 
 class MusicAdapter:
     def __init__(self):
@@ -290,7 +292,6 @@ class MusicAdapter:
         return opts
 
     async def get_yt_track(self, video_id: str) -> Optional[Dict[str, Any]]:
-        global YT_METADATA_METHODS
         logger.info(f"Fetching YouTube metadata for: {video_id}")
         if video_id.startswith("yt_"): video_id = video_id[3:]
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -299,15 +300,19 @@ class MusicAdapter:
         last_error = None
         is_404 = False
 
-        for method in list(YT_METADATA_METHODS):
+        async with YT_METADATA_METHODS_LOCK:
+            current_order = list(YT_METADATA_METHODS)
+
+        for method in current_order:
             try:
                 opts = self._get_ydl_opts(method, PROXY)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
                     if info:
-                        if method in YT_METADATA_METHODS:
-                            YT_METADATA_METHODS.remove(method)
-                            YT_METADATA_METHODS.insert(0, method)
+                        async with YT_METADATA_METHODS_LOCK:
+                            if method in YT_METADATA_METHODS:
+                                YT_METADATA_METHODS.remove(method)
+                                YT_METADATA_METHODS.insert(0, method)
 
                         result = {
                             "wrapperType": "track",
@@ -331,9 +336,10 @@ class MusicAdapter:
                     is_404 = True
                     break # Confirmed not found
 
-                if method in YT_METADATA_METHODS:
-                    YT_METADATA_METHODS.remove(method)
-                    YT_METADATA_METHODS.append(method)
+                async with YT_METADATA_METHODS_LOCK:
+                    if method in YT_METADATA_METHODS:
+                        YT_METADATA_METHODS.remove(method)
+                        YT_METADATA_METHODS.append(method)
 
         if is_404:
              logger.warning(f"YouTube video {video_id} confirmed not found or unavailable.")
@@ -362,7 +368,6 @@ class MusicAdapter:
         raise Exception(msg)
 
     async def get_sc_track(self, sc_id: str) -> Optional[Dict[str, Any]]:
-        global SC_METADATA_METHODS
         logger.info(f"Fetching SoundCloud metadata for: {sc_id}")
         if sc_id.startswith("sc_"): sc_id = sc_id[3:]
 
@@ -376,10 +381,13 @@ class MusicAdapter:
         loop = asyncio.get_event_loop()
         last_error = None
 
-        for method in list(SC_METADATA_METHODS):
+        async with SC_METADATA_METHODS_LOCK:
+            current_order = list(SC_METADATA_METHODS)
+
+        for method in current_order:
             try:
                 # Use randomized User-Agents even for SC for better luck
-                from core.http_client import USER_AGENTS
+                from core.config import USER_AGENTS
                 opts = {
                     'quiet': True,
                     'no_check_certificate': True,
@@ -390,9 +398,10 @@ class MusicAdapter:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
                     if info:
-                        if method in SC_METADATA_METHODS:
-                            SC_METADATA_METHODS.remove(method)
-                            SC_METADATA_METHODS.insert(0, method)
+                        async with SC_METADATA_METHODS_LOCK:
+                            if method in SC_METADATA_METHODS:
+                                SC_METADATA_METHODS.remove(method)
+                                SC_METADATA_METHODS.insert(0, method)
                         result = self._sc_to_itunes(info)
                         if result:
                             from crawlers.itunes import save_metadata
@@ -405,9 +414,10 @@ class MusicAdapter:
                     logger.warning(f"SoundCloud track {sc_id} confirmed not found.")
                     return None
 
-                if method in SC_METADATA_METHODS:
-                    SC_METADATA_METHODS.remove(method)
-                    SC_METADATA_METHODS.append(method)
+                async with SC_METADATA_METHODS_LOCK:
+                    if method in SC_METADATA_METHODS:
+                        SC_METADATA_METHODS.remove(method)
+                        SC_METADATA_METHODS.append(method)
 
         msg = f"Ultimate technical failure fetching SoundCloud metadata for {sc_id}: {last_error}"
         logger.error(msg)

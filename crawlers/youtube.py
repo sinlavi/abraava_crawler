@@ -19,7 +19,7 @@ from rapidfuzz import fuzz
 from ytmusicapi import YTMusic
 
 try:
-    from core.config import OFFLINE_MODE, PROXY
+    from core.config import OFFLINE_MODE, PROXY, USER_AGENTS
 except ImportError:
     OFFLINE_MODE = False
     PROXY = "socks5h://127.0.0.1:1080"
@@ -49,23 +49,13 @@ COMMON_OPTS: dict = {
     "sleep_interval_requests": 1,
 }
 
-# ── User‑agent list (Expanded for better bot evasion) ────────────────────
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36"
-]
-
 # ── Smart Method Sorting ────────────────────────────────────────────────
 METHOD_ORDER = [8, 2, 3, 4, 5, 6, 7, 1]
+METHOD_ORDER_LOCK = asyncio.Lock()
 
 # ── Search Method Order (same as download methods) ───────────────────────
 SEARCH_METHOD_ORDER = [8, 2, 3, 4, 5, 6, 7, 1]
+SEARCH_METHOD_ORDER_LOCK = asyncio.Lock()
 
 # ============================================================================
 # YouTube Music Helper
@@ -103,29 +93,44 @@ def _get_random_headers() -> dict:
     }
 
 
+_HAS_DENO = None
+
+
 def _check_deno() -> bool:
     """Return True if Deno runtime is available."""
+    global _HAS_DENO
+    if _HAS_DENO is not None:
+        return _HAS_DENO
     try:
         subprocess.run(["deno", "--version"], capture_output=True, check=True)
-        return True
+        _HAS_DENO = True
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
+        _HAS_DENO = False
+    return _HAS_DENO
+
+
+_CACHED_LOCAL_PROXY = None
 
 
 def _check_proxy() -> Optional[str]:
     """Return SOCKS5 proxy URL if WARP/Dante/etc. is listening on 1080."""
+    global _CACHED_LOCAL_PROXY
+    if _CACHED_LOCAL_PROXY is not None:
+        return _CACHED_LOCAL_PROXY if _CACHED_LOCAL_PROXY else None
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(1)
     try:
         if s.connect_ex(("127.0.0.1", 1080)) == 0:
             s.close()
-            return "socks5://127.0.0.1:1080"
+            _CACHED_LOCAL_PROXY = "socks5://127.0.0.1:1080"
+        else:
+            _CACHED_LOCAL_PROXY = ""  # Use empty string to indicate checked but not found
     except Exception:
-        pass
+        _CACHED_LOCAL_PROXY = ""
     finally:
         s.close()
-    return None
+    return _CACHED_LOCAL_PROXY if _CACHED_LOCAL_PROXY else None
 
 
 def _build_search_ydl_opts(method: int, preferred_quality: int, use_proxy: bool = True) -> dict:
@@ -228,20 +233,22 @@ def _calculate_relevance_score(video_info: dict, t_name: str, a_name: str, colle
     
     score = 0.0
     
-    # Title matching (40% weight)
-    score += _get_similarity(t_name, title) * 0.40
+    # Title matching (45% weight)
+    title_sim = _get_similarity(t_name, title)
+    score += title_sim * 0.45
     
-    # Artist/channel matching (30% weight)
+    # Artist/channel matching (25% weight)
     artist_text = f"{channel} {uploader}"
-    score += _get_similarity(a_name, artist_text) * 0.30
+    score += _get_similarity(a_name, artist_text) * 0.25
     
     # Duration matching (20% weight)
     if target_duration_ms > 0 and duration > 0:
         target_sec = target_duration_ms / 1000
         diff = abs(target_sec - duration)
-        if diff < 5: score += 0.20
-        elif diff < 15: score += 0.10
-        elif diff > 30: score -= 0.50 # Heavy penalty for large duration mismatch
+        if diff < 3: score += 0.20
+        elif diff < 7: score += 0.10
+        elif diff > 20: score -= 1.0 # Ultimate penalty
+        elif diff > 10: score -= 0.50 # Heavy penalty for large duration mismatch
 
     # Album/collection matching (5% weight)
     if collection_name:
@@ -263,8 +270,6 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
     Search for a YouTube track using multiple methods (same as download).
     Returns video ID or None.
     """
-    global SEARCH_METHOD_ORDER
-    
     if OFFLINE_MODE:
         logger.info("Offline mode: skipping YouTube search")
         return None
@@ -291,7 +296,10 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
     successful_methods = []
     
     # Try each method in order
-    for i, method in enumerate(list(SEARCH_METHOD_ORDER)):
+    async with SEARCH_METHOD_ORDER_LOCK:
+        current_order = list(SEARCH_METHOD_ORDER)
+
+    for i, method in enumerate(current_order):
         use_proxy = (i % 2 == 0) if PROXY else False
         logger.debug(f"Searching with method {method} (Proxy: {use_proxy})")
         
@@ -313,9 +321,10 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
                     successful_methods.append(method)
                     
                     # Update method order (bring successful method to front)
-                    if method in SEARCH_METHOD_ORDER:
-                        SEARCH_METHOD_ORDER.remove(method)
-                        SEARCH_METHOD_ORDER.insert(0, method)
+                    async with SEARCH_METHOD_ORDER_LOCK:
+                        if method in SEARCH_METHOD_ORDER:
+                            SEARCH_METHOD_ORDER.remove(method)
+                            SEARCH_METHOD_ORDER.insert(0, method)
                     
                     # If score is very high (90%+), stop searching
                     if score >= 0.9:
@@ -328,9 +337,10 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
         except Exception as e:
             logger.debug(f"Search method {method} error: {e}")
             # Move failed method to the end
-            if method in SEARCH_METHOD_ORDER:
-                SEARCH_METHOD_ORDER.remove(method)
-                SEARCH_METHOD_ORDER.append(method)
+            async with SEARCH_METHOD_ORDER_LOCK:
+                if method in SEARCH_METHOD_ORDER:
+                    SEARCH_METHOD_ORDER.remove(method)
+                    SEARCH_METHOD_ORDER.append(method)
     
     if best_result:
         # Title similarity check for the best result
@@ -479,7 +489,6 @@ async def download_audio(
     """
     Download YouTube audio as MP3.
     """
-    global METHOD_ORDER
     preferred_quality = quality
     url = _normalize_url(url)
 
@@ -499,7 +508,10 @@ async def download_audio(
     before = set(Path(unique_dir).glob("*.mp3"))
     loop = asyncio.get_event_loop()
 
-    for i, method in enumerate(list(METHOD_ORDER)):
+    async with METHOD_ORDER_LOCK:
+        current_order = list(METHOD_ORDER)
+
+    for i, method in enumerate(current_order):
         for attempt in range(1, max_retries_per_method + 1):
             use_proxy = (i % 2 == 0) if PROXY else False
             logger.info("▶ Try Method %d (Attempt %d, Proxy: %s)", method, attempt, use_proxy)
@@ -514,9 +526,10 @@ async def download_audio(
 
             except Exception as exc:
                 logger.warning("Method %d failed: %s", method, exc)
-                if method in METHOD_ORDER:
-                    METHOD_ORDER.remove(method)
-                    METHOD_ORDER.append(method)
+                async with METHOD_ORDER_LOCK:
+                    if method in METHOD_ORDER:
+                        METHOD_ORDER.remove(method)
+                        METHOD_ORDER.append(method)
 
                 await asyncio.sleep(random.uniform(0.5, 1.0))
                 continue
@@ -528,9 +541,10 @@ async def download_audio(
                 size_mb = mp3_path.stat().st_size / (1024 * 1024)
                 logger.info("✅ Success with method %d → %s (%.1f MB)", method, mp3_path.name, size_mb)
 
-                if method in METHOD_ORDER:
-                    METHOD_ORDER.remove(method)
-                    METHOD_ORDER.insert(0, method)
+                async with METHOD_ORDER_LOCK:
+                    if method in METHOD_ORDER:
+                        METHOD_ORDER.remove(method)
+                        METHOD_ORDER.insert(0, method)
 
                 return str(mp3_path)
             else:

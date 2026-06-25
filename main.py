@@ -42,7 +42,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
 
     logger.info(f"Processing download {download_id} for track {track_id}")
 
-    max_attempts = 5
+    max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         # Update status to downloading
         await update_download_status(download_id, "downloading", percent=0)
@@ -153,7 +153,7 @@ async def run_crawler():
                     task = asyncio.create_task(process_queue_item(bot, item, download_service, artwork_service, user_id))
                     tasks.append(task)
                     # Stagger task start
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)
 
                 if tasks:
                     await asyncio.gather(*tasks)

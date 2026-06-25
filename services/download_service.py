@@ -2,6 +2,7 @@ from services.lyrics_service import lyrics_service
 import asyncio
 import os
 import shutil
+import telegram
 from pathlib import Path
 from typing import Optional, Union, List
 from telegram import Bot, Message
@@ -195,7 +196,25 @@ class DownloadService:
                         await self.bot.send_chat_action(chat_id, "upload_voice")
                     logger.info(f"Uploading fresh audio: {track.get('trackName')} ({quality_value}kbps)")
 
-                    msg = await self.bot.send_audio(chat_id, audio=f, caption=caption)
+                    try:
+                        msg = await self.bot.send_audio(chat_id, audio=f, caption=caption)
+                    except telegram.error.BadRequest as e:
+                        if ("File is too large" in str(e) or "file_too_large" in str(e).lower()) and str(quality_value) == "320":
+                            logger.warning(f"File too large for 320kbps, retrying with 192kbps: {track.get('trackName')}")
+                            status_msg = await self._update_status(chat_id, status_msg, "⚠️ *حجم فایل زیاد است، در حال تبدیل به ۱۹۲...*",
+                                                                   status_prefix, is_batch, silent=silent)
+
+                            mp3_192_retry_path = mp3_path.replace(".mp3", "_retry_192.mp3")
+                            if convert_bitrate(Path(mp3_path), Path(mp3_192_retry_path), "192"):
+                                self.tagging_service.tag_mp3(Path(mp3_192_retry_path), track, cover_bytes, lyrics=lyrics_to_tag)
+                                with open(mp3_192_retry_path, 'rb') as f_retry:
+                                    msg = await self.bot.send_audio(chat_id, audio=f_retry, caption=self._build_caption(track, "192"))
+                                    quality_value = "192" # Update quality for logging and mirroring
+                            else:
+                                raise e
+                        else:
+                            raise e
+
                     if msg and track_id:
                         await set_mirror('track', str(track_id), 'audioUrl',
                                          f'https://api.telegram.org/file/bot<token>/{msg.audio.file_id}',

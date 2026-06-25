@@ -54,61 +54,45 @@ class LyricsService:
         logger.info(f"Retrieving lyrics for: {title} - {artist} (ID: {track_id})")
 
         # 1. 3rah API Check (Central Cache)
-        central_lyrics = None
-        central_success = False
         try:
             logger.info(f"Checking 3rah central API for lyrics (ID: {track_id})")
-            # get_3rah_lyrics should return the full response or at least include 'success'
-            # fetch_itunes already handles errors, but if it returns None it's an error.
             from crawlers.itunes import fetch_itunes
             resp = await fetch_itunes("lyrics/get", params={"id": track_id})
 
-            if resp is None: # Technical error
-                msg = f"Technical error fetching from 3rah API for {track_id}"
-                logger.error(msg)
-                raise Exception(msg)
-
-            if resp.get("success"):
-                central_success = True
+            if resp and resp.get("success"):
                 central_lyrics = resp.get("lyrics")
                 if central_lyrics and (central_lyrics.get("synced") or central_lyrics.get("plain")):
                     logger.info(f"Lyrics found in 3rah API for {track_id}")
                     return central_lyrics
             else:
-                # 3rah API success: False usually means not found in this context,
-                # but let's be safe and only proceed if it's not a technical error (already handled by fetch_itunes returning None)
-                logger.warning(f"3rah API returned success: False for {track_id}. Proceeding to fallbacks.")
+                logger.warning(f"3rah API returned success: False or None for {track_id}. Proceeding to fallbacks.")
         except Exception as e:
-            logger.error(f"Error checking 3rah API: {e}")
-            raise Exception(f"Technical error checking 3rah API: {e}")
+            logger.warning(f"Error checking 3rah API for {track_id}: {e}. Proceeding to fallbacks.")
 
-        # If we reached here, 3rah API was successful but didn't have lyrics. Proceed to fallbacks.
         # 3. LRCLIB Fallback
         logger.info(f"Lyrics not on 3rah, trying LRCLIB: {title} - {artist}")
-        lyrics_dict = await self._fetch_from_lrclib(title, artist, album, duration_ms)
-
-        if lyrics_dict is None:
-            msg = f"Technical error fetching from LRCLIB for {track_id}"
-            logger.error(msg)
-            raise Exception(msg)
+        lyrics_dict = {}
+        try:
+            lyrics_dict = await self._fetch_from_lrclib(title, artist, album, duration_ms) or {}
+        except Exception as e:
+            logger.warning(f"Error fetching from LRCLIB for {track_id}: {e}")
 
         # 4. YTMusic Fallback
         if not lyrics_dict or (not lyrics_dict.get("synced") and not lyrics_dict.get("plain")):
             logger.info(f"LRCLIB returned no lyrics, trying YTMusic: {title} - {artist}")
-            lyrics_dict = await self._fetch_from_ytmusic(track_id, title, artist)
+            try:
+                lyrics_dict = await self._fetch_from_ytmusic(track_id, title, artist) or {}
+            except Exception as e:
+                logger.warning(f"Error fetching from YTMusic for {track_id}: {e}")
 
-            if lyrics_dict is None:
-                msg = f"Technical error fetching from YTMusic for {track_id}"
-                logger.error(msg)
-                raise Exception(msg)
+        if not lyrics_dict or (not lyrics_dict.get("synced") and not lyrics_dict.get("plain")):
+            logger.info(f"No lyrics found for {track_id}. Using placeholder.")
+            lyrics_dict = {"synced": None, "plain": "Instrumental/Not found"}
 
-        if lyrics_dict and (lyrics_dict.get("synced") or lyrics_dict.get("plain")):
-            logger.info(f"Lyrics successfully crawled from fallbacks for {track_id}")
-            # Sync to central 3rah API (since it was missing there)
-            await self._sync_to_central(track_id, lyrics_dict)
-            return lyrics_dict
-
-        return None # No lyrics found anywhere
+        logger.info(f"Lyrics successfully determined for {track_id}")
+        # Sync to central 3rah API
+        await self._sync_to_central(track_id, lyrics_dict)
+        return lyrics_dict
 
     async def _sync_to_central(self, track_id, lyrics_dict):
         try:
@@ -225,7 +209,7 @@ class LyricsService:
             logger.warning(f"Could not find YouTube video for {title} - {artist}")
             return {}
 
-        from core.http_client import USER_AGENTS
+        from core.config import USER_AGENTS
         uas = list(USER_AGENTS)
         random.shuffle(uas)
 
