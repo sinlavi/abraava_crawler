@@ -128,7 +128,7 @@ def _check_proxy() -> Optional[str]:
     return None
 
 
-def _build_search_ydl_opts(method: int, preferred_quality: int) -> dict:
+def _build_search_ydl_opts(method: int, preferred_quality: int, use_proxy: bool = True) -> dict:
     """
     Build yt‑dlp options specifically for searching (extract info only).
     """
@@ -145,7 +145,7 @@ def _build_search_ydl_opts(method: int, preferred_quality: int) -> dict:
     opts["http_headers"] = _get_random_headers()
     
     has_deno = _check_deno()
-    opts["proxy"] = PROXY
+    opts["proxy"] = PROXY if use_proxy else None
     
     # Same method-specific configurations as download
     if method == 8:
@@ -193,13 +193,13 @@ def _build_search_ydl_opts(method: int, preferred_quality: int) -> dict:
     return opts
 
 
-def _search_with_ytdlp(search_query: str, method: int) -> Optional[dict]:
+def _search_with_ytdlp(search_query: str, method: int, use_proxy: bool = True) -> Optional[dict]:
     """
     Search YouTube using yt-dlp with specific method.
     Returns the best matching video info or None.
     """
     try:
-        opts = _build_search_ydl_opts(method, 128)
+        opts = _build_search_ydl_opts(method, 128, use_proxy=use_proxy)
         
         with yt_dlp.YoutubeDL(opts) as ydl:
             # Search query format for yt-dlp
@@ -270,14 +270,15 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
         return None
     
     # First try YTMusic as it's faster for searches
-    try:
-        loop = asyncio.get_event_loop()
-        ytmusic_id = await loop.run_in_executor(None, _sync_search_youtube, t_name, a_name, collection_name, ye, target_duration_ms)
-        if ytmusic_id:
-            logger.info(f"✅ YTMusic search successful: {ytmusic_id}")
-            return ytmusic_id
-    except Exception as e:
-        logger.debug(f"YTMusic search failed: {e}")
+    for use_proxy in [True, False]:
+        try:
+            loop = asyncio.get_event_loop()
+            ytmusic_id = await loop.run_in_executor(None, _sync_search_youtube, t_name, a_name, collection_name, ye, target_duration_ms, use_proxy)
+            if ytmusic_id:
+                logger.info(f"✅ YTMusic search successful (Proxy: {use_proxy}): {ytmusic_id}")
+                return ytmusic_id
+        except Exception as e:
+            logger.debug(f"YTMusic search failed (Proxy: {use_proxy}): {e}")
     
     # Build search query
     search_query = f"{t_name} {a_name}".strip()
@@ -290,12 +291,13 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
     successful_methods = []
     
     # Try each method in order
-    for method in list(SEARCH_METHOD_ORDER):
-        logger.debug(f"Searching with method {method}")
+    for i, method in enumerate(list(SEARCH_METHOD_ORDER)):
+        use_proxy = (i % 2 == 0) if PROXY else False
+        logger.debug(f"Searching with method {method} (Proxy: {use_proxy})")
         
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, _search_with_ytdlp, search_query, method)
+            result = await loop.run_in_executor(None, _search_with_ytdlp, search_query, method, use_proxy)
             
             if result and result.get('id'):
                 # Calculate relevance score
@@ -321,7 +323,7 @@ async def search_youtube_track(t_name: str, a_name: str, collection_name: str, y
                         break
             
             # Random delay between methods to avoid rate limiting
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await asyncio.sleep(random.uniform(0.1, 0.3))
             
         except Exception as e:
             logger.debug(f"Search method {method} error: {e}")
@@ -350,18 +352,28 @@ def _get_similarity(a: str, b: str) -> float:
     return fuzz.WRatio(str(a), str(b)) / 100.0
 
 
-def _sync_search_youtube(t_name: str, a_name: str, collection_name: str, ye: str, target_duration_ms: int = 0) -> Optional[str]:
+_YT_PROXIED = None
+_YT_DIRECT = None
+
+def _sync_search_youtube(t_name: str, a_name: str, collection_name: str, ye: str, target_duration_ms: int = 0, use_proxy: bool = True) -> Optional[str]:
     """
     Original YTMusic search as fallback.
     """
-    global YT
-    if YT is None:
-        YT = YTMusic(proxies={"https": PROXY, "http": PROXY})
+    global _YT_PROXIED, _YT_DIRECT
+
+    if use_proxy and PROXY:
+        if _YT_PROXIED is None:
+            _YT_PROXIED = YTMusic(proxies={"https": PROXY, "http": PROXY})
+        yt = _YT_PROXIED
+    else:
+        if _YT_DIRECT is None:
+            _YT_DIRECT = YTMusic()
+        yt = _YT_DIRECT
 
     search_query = f"{t_name} {a_name} {collection_name}".strip()
 
     try:
-        results = YT.search(search_query, filter="songs", limit=10)
+        results = yt.search(search_query, filter="songs", limit=10)
 
         if not results or not isinstance(results, list):
             return None
@@ -420,35 +432,39 @@ def _sync_search_youtube(t_name: str, a_name: str, collection_name: str, ye: str
 
 def get_artist_image(artist_name):
     """Get artist image from YTMusic with improved error handling"""
-    global YT
-    if YT is None:
+    global _YT_PROXIED, _YT_DIRECT
+
+    for use_proxy in [True, False]:
         try:
-            YT = YTMusic(proxies={"https": PROXY, "http": PROXY})
+            if use_proxy and PROXY:
+                if _YT_PROXIED is None:
+                    _YT_PROXIED = YTMusic(proxies={"https": PROXY, "http": PROXY})
+                yt = _YT_PROXIED
+            else:
+                if _YT_DIRECT is None:
+                    _YT_DIRECT = YTMusic()
+                yt = _YT_DIRECT
+
+            search_results = yt.search(artist_name, filter="artists", limit=1)
+            if not search_results or not isinstance(search_results, list):
+                continue
+
+            artist_id = search_results[0].get('browseId')
+            if not artist_id:
+                continue
+
+            artist_info = yt.get_artist(artist_id)
+            if not artist_info or not isinstance(artist_info, dict):
+                continue
+
+            thumbnails = artist_info.get('thumbnails')
+            if thumbnails and isinstance(thumbnails, list) and len(thumbnails) > 0:
+                # thumbnails are usually sorted by size, but we'll try to find the one with highest resolution
+                # or just take the first one which is standard for get_artist
+                return thumbnails[-1].get('url')
+
         except Exception as e:
-            logger.error(f"Failed to initialize YTMusic: {e}")
-            return None
-
-    try:
-        search_results = YT.search(artist_name, filter="artists", limit=1)
-        if not search_results or not isinstance(search_results, list):
-            return None
-
-        artist_id = search_results[0].get('browseId')
-        if not artist_id:
-            return None
-
-        artist_info = YT.get_artist(artist_id)
-        if not artist_info or not isinstance(artist_info, dict):
-            return None
-
-        thumbnails = artist_info.get('thumbnails')
-        if thumbnails and isinstance(thumbnails, list) and len(thumbnails) > 0:
-            # thumbnails are usually sorted by size, but we'll try to find the one with highest resolution
-            # or just take the first one which is standard for get_artist
-            return thumbnails[-1].get('url')
-
-    except Exception as e:
-        logger.error(f"YTMusic get_artist_image error for '{artist_name}': {e}")
+            logger.error(f"YTMusic get_artist_image error for '{artist_name}': {e}")
 
     return None
 
@@ -483,11 +499,12 @@ async def download_audio(
     before = set(Path(unique_dir).glob("*.mp3"))
     loop = asyncio.get_event_loop()
 
-    for method in list(METHOD_ORDER):
+    for i, method in enumerate(list(METHOD_ORDER)):
         for attempt in range(1, max_retries_per_method + 1):
-            logger.info("▶ Try Method %d (Attempt %d)", method, attempt)
+            use_proxy = (i % 2 == 0) if PROXY else False
+            logger.info("▶ Try Method %d (Attempt %d, Proxy: %s)", method, attempt, use_proxy)
             try:
-                opts = _build_opts(method, unique_dir, preferred_quality)
+                opts = _build_opts(method, unique_dir, preferred_quality, use_proxy=use_proxy)
 
                 def run_ydl():
                     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -501,7 +518,7 @@ async def download_audio(
                     METHOD_ORDER.remove(method)
                     METHOD_ORDER.append(method)
 
-                await asyncio.sleep(random.uniform(1.5, 3.0))
+                await asyncio.sleep(random.uniform(0.5, 1.0))
                 continue
 
             after = set(Path(unique_dir).glob("*.mp3"))
@@ -518,7 +535,7 @@ async def download_audio(
                 return str(mp3_path)
             else:
                 logger.warning("Method %d completed but no MP3 found – retrying…", method)
-                await asyncio.sleep(random.uniform(1.0, 2.0))
+                await asyncio.sleep(random.uniform(0.3, 0.7))
 
     try:
         shutil.rmtree(unique_dir, ignore_errors=True)
@@ -539,7 +556,7 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-def _build_opts(method: int, output_dir: str, preferred_quality: int) -> dict:
+def _build_opts(method: int, output_dir: str, preferred_quality: int, use_proxy: bool = True) -> dict:
     """
     Build yt‑dlp options dict for the given method number (1‑8).
     """
@@ -558,7 +575,7 @@ def _build_opts(method: int, output_dir: str, preferred_quality: int) -> dict:
     opts["postprocessors"] = [AUDIO_POSTPROCESSOR]
 
     has_deno = _check_deno()
-    opts["proxy"] = PROXY
+    opts["proxy"] = PROXY if use_proxy else None
 
     opts["http_headers"] = _get_random_headers()
 

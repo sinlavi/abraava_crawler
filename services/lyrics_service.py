@@ -32,10 +32,13 @@ class LyricsService:
         cookies_path = "cookies.txt"
         cookie_header = _load_cookies_as_header(cookies_path)
 
-        self.ytm = YTMusic(proxies={"https": PROXY, "http": PROXY})
+        self.ytm_proxied = YTMusic(proxies={"https": PROXY, "http": PROXY})
+        self.ytm_direct = YTMusic()
+
         if cookie_header:
             logger.info(f"Adding Cookie header from: {cookies_path}")
-            self.ytm.headers["Cookie"] = cookie_header
+            self.ytm_proxied.headers["Cookie"] = cookie_header
+            self.ytm_direct.headers["Cookie"] = cookie_header
 
         self._executor = ThreadPoolExecutor(max_workers=5)
 
@@ -229,13 +232,16 @@ class LyricsService:
         last_error = None
         for i, ua in enumerate(uas):
             try:
-                self.ytm.headers["User-Agent"] = ua
+                use_proxy = (i % 2 == 0) if PROXY else False
+                ytm = self.ytm_proxied if use_proxy else self.ytm_direct
+
+                ytm.headers["User-Agent"] = ua
                 loop = asyncio.get_event_loop()
 
                 # Get watch playlist to find lyrics browse ID
                 watch_playlist = await loop.run_in_executor(
                     self._executor,
-                    lambda: self.ytm.get_watch_playlist(video_id)
+                    lambda: ytm.get_watch_playlist(video_id)
                 )
 
                 lyrics_browse_id = watch_playlist.get('lyrics')
@@ -246,14 +252,14 @@ class LyricsService:
                 # Fetch the actual lyrics
                 lyrics_data = await loop.run_in_executor(
                     self._executor,
-                    lambda: self.ytm.get_lyrics(lyrics_browse_id)
+                    lambda: ytm.get_lyrics(lyrics_browse_id)
                 )
 
                 return {"synced": None, "plain": lyrics_data.get('lyrics')} if lyrics_data.get('lyrics') else {}
             except Exception as e:
-                logger.debug(f"YTMusic lyrics method {i+1} failed: {e}")
+                logger.debug(f"YTMusic lyrics method {i+1} failed (Proxy: {use_proxy}): {e}")
                 last_error = e
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
 
         logger.error(f"All 8 methods failed for YTMusic lyrics: {last_error}")
         return None # Technical error

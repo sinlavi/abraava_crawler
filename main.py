@@ -42,7 +42,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
 
     logger.info(f"Processing download {download_id} for track {track_id}")
 
-    max_attempts = 3
+    max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         # Update status to downloading
         await update_download_status(download_id, "downloading", percent=0)
@@ -100,7 +100,7 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
             logger.warning(f"Error processing download {download_id} (Attempt {attempt}/{max_attempts}): {e}")
             if attempt < max_attempts:
                 # Wait before retrying (exponential backoff or fixed delay)
-                await asyncio.sleep(10 * attempt)
+                await asyncio.sleep(5 * attempt)
             else:
                 logger.error(f"Ultimate failure processing download {download_id}: {e}")
                 await update_download_status(download_id, "failed", error_message=str(e))
@@ -138,7 +138,7 @@ async def run_crawler():
                 queue_resp = await get_download_queue(status="pending", limit=100)
                 if not queue_resp or not queue_resp.get("success") or not queue_resp.get("items"):
                     logger.debug("No pending downloads found. Sleeping...")
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(10)
                     continue
 
                 items = queue_resp.get("items", [])
@@ -153,17 +153,17 @@ async def run_crawler():
                     task = asyncio.create_task(process_queue_item(bot, item, download_service, artwork_service, user_id))
                     tasks.append(task)
                     # Stagger task start
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)
 
                 if tasks:
                     await asyncio.gather(*tasks)
 
                 # Small delay after batch to avoid heavy bursts
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
 
             except Exception as e:
                 logger.exception(f"Crawler loop error: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(20)
 
 def signal_handler(sig, frame):
     sys.exit(0)
