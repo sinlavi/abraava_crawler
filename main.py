@@ -42,60 +42,68 @@ async def process_queue_item(bot, item, download_service, artwork_service, user_
 
     logger.info(f"Processing download {download_id} for track {track_id}")
 
-    # Update status to downloading
-    await update_download_status(download_id, "downloading", percent=0)
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        # Update status to downloading
+        await update_download_status(download_id, "downloading", percent=0)
 
-    # Process track
-    try:
-        # 1. Fetch metadata
-        track_data = await get_track(track_id)
-        if not track_data or not track_data.get("results"):
-            raise Exception("Track data not found")
+        # Process track
+        try:
+            # 1. Fetch metadata
+            track_data = await get_track(track_id)
+            if not track_data or not track_data.get("results"):
+                raise Exception("Track data not found")
 
-        track = track_data["results"][0]
-        await update_download_status(download_id, "downloading", percent=5)
+            track = track_data["results"][0]
+            await update_download_status(download_id, "downloading", percent=5)
 
-        # 2. Upload Artwork
-        artwork_url = get_high_res_artwork(track.get("artworkUrl100"), 400)
-        if artwork_url:
-            coll_id = track.get("collectionId") or track_id
-            # Use lock to prevent duplicate concurrent uploads for the same collection
-            async with artwork_lock:
-                # We need to adapt ArtworkService or just use it as is if it doesn't strictly depend on balethon for get_cached_artwork_url
-                if not await artwork_service.get_cached_artwork_url("collection", coll_id):
-                    artwork_bytes = await artwork_service.get_artwork_for_display("collection", coll_id, artwork_url, user_id)
-                    if artwork_bytes:
-                        caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
-                        # Adapt send_artwork_photo if needed, but for now we follow the goal of hardcoding target chat
-                        await bot.send_photo(TARGET_CHANNEL_ID, photo=artwork_bytes, caption=caption)
+            # 2. Upload Artwork
+            artwork_url = get_high_res_artwork(track.get("artworkUrl100"), 400)
+            if artwork_url:
+                coll_id = track.get("collectionId") or track_id
+                # Use lock to prevent duplicate concurrent uploads for the same collection
+                async with artwork_lock:
+                    # We need to adapt ArtworkService or just use it as is if it doesn't strictly depend on balethon for get_cached_artwork_url
+                    if not await artwork_service.get_cached_artwork_url("collection", coll_id):
+                        artwork_bytes = await artwork_service.get_artwork_for_display("collection", coll_id, artwork_url, user_id)
+                        if artwork_bytes:
+                            caption = f"🖼 *کاور آهنگ:* {track.get('trackName')} - {track.get('artistName')}"
+                            # Adapt send_artwork_photo if needed, but for now we follow the goal of hardcoding target chat
+                            await bot.send_photo(TARGET_CHANNEL_ID, photo=artwork_bytes, caption=caption)
 
-        await update_download_status(download_id, "downloading", percent=10)
+            await update_download_status(download_id, "downloading", percent=10)
 
-        # 3. Upload Preview
-        if track.get("previewUrl"):
-            await send_voice_preview(bot, TARGET_CHANNEL_ID, track_id, user_id, silent=True)
+            # 3. Upload Preview
+            if track.get("previewUrl"):
+                await send_voice_preview(bot, TARGET_CHANNEL_ID, track_id, user_id, silent=True)
 
-        await update_download_status(download_id, "downloading", percent=15)
+            await update_download_status(download_id, "downloading", percent=15)
 
-        # 4. Download and Send Audio
-        _, success = await download_service.download_and_send_track(
-            chat_id=TARGET_CHANNEL_ID,
-            track_id=track_id,
-            user_id=user_id,
-            selected_quality=quality,
-            silent=True,
-            download_id=download_id
-        )
+            # 4. Download and Send Audio
+            _, success = await download_service.download_and_send_track(
+                chat_id=TARGET_CHANNEL_ID,
+                track_id=track_id,
+                user_id=user_id,
+                selected_quality=quality,
+                silent=True,
+                download_id=download_id
+            )
 
-        if success:
-            logger.info(f"Successfully processed download {download_id}")
-            await update_download_status(download_id, "completed", percent=100)
-        else:
-            logger.error(f"Failed to process download {download_id}")
-            await update_download_status(download_id, "failed", error_message="Download or upload failed")
-    except Exception as e:
-        logger.exception(f"Error processing download {download_id}: {e}")
-        await update_download_status(download_id, "failed", error_message=str(e))
+            if success:
+                logger.info(f"Successfully processed download {download_id} on attempt {attempt}")
+                await update_download_status(download_id, "completed", percent=100)
+                return
+            else:
+                raise Exception("Download or upload failed")
+
+        except Exception as e:
+            logger.warning(f"Error processing download {download_id} (Attempt {attempt}/{max_attempts}): {e}")
+            if attempt < max_attempts:
+                # Wait before retrying (exponential backoff or fixed delay)
+                await asyncio.sleep(10 * attempt)
+            else:
+                logger.error(f"Ultimate failure processing download {download_id}: {e}")
+                await update_download_status(download_id, "failed", error_message=str(e))
 
 
 async def run_crawler():
@@ -138,13 +146,17 @@ async def run_crawler():
                 # Use a dummy user_id (Admin ID)
                 user_id = 234591600
 
-                # Process items concurrently
-                tasks = [
-                    process_queue_item(bot, item, download_service, artwork_service, user_id)
-                    for item in items
-                ]
+                # Process items concurrently but with a small stagger to prevent rate limiting
+                tasks = []
+                for item in items:
+                    # create_task schedules execution immediately
+                    task = asyncio.create_task(process_queue_item(bot, item, download_service, artwork_service, user_id))
+                    tasks.append(task)
+                    # Stagger task start
+                    await asyncio.sleep(2)
 
-                await asyncio.gather(*tasks)
+                if tasks:
+                    await asyncio.gather(*tasks)
 
                 # Small delay after batch to avoid heavy bursts
                 await asyncio.sleep(2)

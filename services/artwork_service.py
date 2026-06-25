@@ -8,7 +8,6 @@ from typing import Optional, Union, Dict, Any, List, Tuple
 from telegram import Bot, Message
 from core.logger import logger
 from core.http_client import HttpClient
-from utils.image_utils import crop_to_square
 from services.api_client import APIClient
 from crawlers.itunes import set_mirror, get_attachments
 from crawlers.youtube import get_artist_image
