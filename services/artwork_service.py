@@ -181,7 +181,7 @@ class ArtworkService:
                     except Exception as e:
                         logger.debug(f"YTM artwork search method {i+1} failed: {e}")
                         last_error = e
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.1)
 
                 if results is None and last_error:
                     msg = f"Technical error searching YTM fallback artwork after 8 methods: {last_error}"

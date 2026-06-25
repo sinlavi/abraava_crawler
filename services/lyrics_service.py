@@ -253,7 +253,7 @@ class LyricsService:
             except Exception as e:
                 logger.debug(f"YTMusic lyrics method {i+1} failed: {e}")
                 last_error = e
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
 
         logger.error(f"All 8 methods failed for YTMusic lyrics: {last_error}")
         return None # Technical error

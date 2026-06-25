@@ -81,7 +81,7 @@ class HttpClient:
                 pass
 
             # Short sleep between retries
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.1)
 
         # If all 8 failed and none was 404
         return None, last_status, True
