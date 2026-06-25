@@ -226,10 +226,7 @@ async def get_cached_preview(track_id: Union[int, str]) -> Optional[str]:
 
 async def get_lyrics(track_id: Union[int, str]) -> Optional[Dict[str, Any]]:
     logger.info(f"Checking lyrics for {track_id}")
-    data = await fetch_itunes("lyrics/get", params={"id": str(track_id)})
-    if data and data.get("success") and "lyrics" in data:
-        return data["lyrics"]
-    return None
+    return await fetch_itunes("lyrics/get", params={"id": str(track_id)})
 
 
 async def set_lyrics(track_id: Union[int, str], lyrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -124,7 +124,9 @@ class DownloadService:
                 artwork_url = track.get('artworkUrl100')
 
             cover_bytes = await self.artwork_service.get_artwork_bytes(track.get('collectionId') or track_id,
-                                                                       artwork_url)
+                                                                       artwork_url,
+                                                                       title=track.get('trackName'),
+                                                                       artist=track.get('artistName'))
 
         video_url = None
         if isinstance(track_id, str) and track_id.startswith(("yt_", "sc_")):

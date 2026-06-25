@@ -453,6 +453,32 @@ def get_artist_image(artist_name):
     return None
 
 
+def get_track_image(title, artist):
+    """Get track image from YTMusic with improved error handling"""
+    global YT
+    if YT is None:
+        try:
+            YT = YTMusic(proxies={"https": PROXY, "http": PROXY})
+        except Exception as e:
+            logger.error(f"Failed to initialize YTMusic: {e}")
+            return None
+
+    try:
+        search_query = f"{title} {artist}"
+        search_results = YT.search(search_query, filter="songs", limit=1)
+        if not search_results or not isinstance(search_results, list):
+            return None
+
+        thumbnails = search_results[0].get('thumbnails')
+        if thumbnails and isinstance(thumbnails, list) and len(thumbnails) > 0:
+            return thumbnails[-1].get('url')
+
+    except Exception as e:
+        logger.error(f"YTMusic get_track_image error for '{title} - {artist}': {e}")
+
+    return None
+
+
 async def download_audio(
         url: str,
         output_dir: Optional[str] = None,
