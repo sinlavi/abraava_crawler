@@ -1,6 +1,8 @@
 import asyncio
+import pytest
 from crawlers.youtube import _check_deno, _check_proxy
 
+@pytest.mark.asyncio
 async def test_caching():
     print("Testing _check_deno caching...")
     res1 = _check_deno()
