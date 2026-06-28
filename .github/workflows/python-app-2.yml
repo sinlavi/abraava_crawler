@@ -1,4 +1,4 @@
-name: Test Deploy
+name: Test Deploy 2
 
 on:
   workflow_dispatch:
@@ -17,47 +17,47 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          
+
       - name: Delete all workflow runs via API with retry logic
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🗑️ Clearing workflow run history via GitHub API..."
-          
+
           REPO="${{ github.repository }}"
           CURRENT_RUN="${{ github.run_id }}"
           echo "Repository: $REPO"
           echo "Current run ID: $CURRENT_RUN (will be preserved)"
-          
+
           DELETED_COUNT=0
           FAILED_COUNT=0
           SKIPPED_COUNT=0
           RATE_LIMITED=0
-          
+
           # GitHub API endpoint for workflow runs
           API_URL="https://api.github.com/repos/$REPO/actions/runs"
-          
+
           # Get total count first
           TOTAL_RUNS=$(curl -s -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "$API_URL?per_page=1" | jq -r '.total_count' 2>/dev/null)
-          
+
           echo "📊 Total workflow runs found: $TOTAL_RUNS"
           echo ""
-          
+
           # Function to delete with retry
           delete_run() {
             local RUN_ID=$1
             local MAX_RETRIES=3
             local RETRY=0
-            
+
             while [ $RETRY -lt $MAX_RETRIES ]; do
               HTTP_STATUS=$(curl -s -X DELETE \
                 -H "Authorization: token $GH_TOKEN" \
                 -H "Accept: application/vnd.github.v3+json" \
                 "$API_URL/$RUN_ID" \
                 -w "%{http_code}" -o /dev/null)
-              
+
               if [ "$HTTP_STATUS" = "204" ]; then
                 return 0
               elif [ "$HTTP_STATUS" = "403" ]; then
@@ -65,7 +65,7 @@ jobs:
                 REMAINING=$(curl -s -H "Authorization: token $GH_TOKEN" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/rate_limit" | jq -r '.resources.actions.remaining')
-                
+
                 if [ "$REMAINING" -lt 10 ]; then
                   echo "⚠️ Rate limit almost exhausted ($REMAINING remaining)"
                   echo "⏳ Waiting 60 seconds before retry..."
@@ -86,24 +86,24 @@ jobs:
             done
             return 3
           }
-          
+
           # Process runs in batches
           PAGE=1
           while [ $PAGE -le 10 ]; do  # Limit to 10 pages (1000 runs) to avoid timeout
             echo "📥 Fetching page $PAGE..."
-            
+
             RESPONSE=$(curl -s -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "$API_URL?per_page=100&page=$PAGE&status=completed")
-            
+
             # Extract run IDs from response
             RUN_IDS=$(echo "$RESPONSE" | jq -r '.workflow_runs[]?.id' 2>/dev/null)
-            
+
             if [ -z "$RUN_IDS" ] || [ "$RUN_IDS" = "null" ]; then
               echo "✅ No more runs found"
               break
             fi
-            
+
             BATCH_COUNT=0
             for RUN_ID in $RUN_IDS; do
               if [ "$RUN_ID" = "$CURRENT_RUN" ]; then
@@ -111,21 +111,21 @@ jobs:
                 SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
                 continue
               fi
-              
+
               # Get run status
               RUN_STATUS=$(echo "$RESPONSE" | jq -r --arg id "$RUN_ID" '.workflow_runs[] | select(.id == ($id | tonumber)) | .status' 2>/dev/null)
-              
+
               if [ "$RUN_STATUS" = "in_progress" ] || [ "$RUN_STATUS" = "queued" ]; then
                 echo "⏸️ Skipping active run $RUN_ID (status: $RUN_STATUS)"
                 SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
                 continue
               fi
-              
+
               echo "🗑️ Deleting run ID: $RUN_ID (status: $RUN_STATUS)"
-              
+
               delete_run $RUN_ID
               RESULT=$?
-              
+
               case $RESULT in
                 0)
                   echo "✅ Successfully deleted run $RUN_ID"
@@ -145,35 +145,35 @@ jobs:
                   FAILED_COUNT=$((FAILED_COUNT + 1))
                   ;;
               esac
-              
+
               # Small delay to avoid rate limiting
               sleep 0.3
             done
-            
+
             echo "📊 Page $PAGE completed: Deleted $BATCH_COUNT runs in this batch"
             echo ""
-            
+
             # Check rate limit status
             REMAINING=$(curl -s -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/rate_limit" | jq -r '.resources.actions.remaining')
-            
+
             echo "💳 Rate limit remaining: $REMAINING"
-            
+
             if [ "$REMAINING" -lt 50 ]; then
               echo "⚠️ Rate limit getting low, waiting 30 seconds..."
               sleep 30
             fi
-            
+
             # Check if there's a next page
             NEXT_PAGE=$(echo "$RESPONSE" | jq -r '.links.next' 2>/dev/null)
             if [ "$NEXT_PAGE" = "null" ] || [ -z "$NEXT_PAGE" ]; then
               break
             fi
-            
+
             PAGE=$((PAGE + 1))
           done
-          
+
           echo ""
           echo "════════════════════════════════════════"
           echo "📊 FINAL SUMMARY:"
@@ -187,7 +187,7 @@ jobs:
           echo "   - Some runs might have been deleted by GitHub automatically"
           echo "   - In-progress runs cannot be deleted"
           echo "════════════════════════════════════════"
-          
+
           # Try one more time with different approach for failed runs if any
           if [ $FAILED_COUNT -gt 0 ]; then
             echo ""
@@ -226,25 +226,25 @@ jobs:
         run: |
           mkdir -p ~/ffmpeg-bin
           cd ~/ffmpeg-bin
-          
+
           echo "📥 Downloading FFmpeg from GitHub releases..."
           wget --timeout=60 --tries=3 --retry-connrefused --progress=dot:giga \
             https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-          
+
           if [ ! -f "ffmpeg-master-latest-linux64-gpl.tar.xz" ]; then
             echo "❌ Download failed, trying fallback..."
             wget --timeout=60 --tries=3 \
               https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2025-01-01-12-54/ffmpeg-master-latest-linux64-gpl.tar.xz
           fi
-          
+
           echo "📦 Extracting FFmpeg..."
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
-          
+
           echo "🔧 Installing FFmpeg..."
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
           sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
-          
+
           rm -rf ffmpeg-master-latest-linux64-gpl*
           echo "✅ FFmpeg installed to /usr/local/bin"
       - name: Verify FFmpeg installation
@@ -255,7 +255,7 @@ jobs:
             echo "📍 FFmpeg path: $(which ffmpeg)"
             echo "✅ FFprobe version: $(ffprobe -version | head -n1)"
             echo "📍 FFprobe path: $(which ffprobe)"
-            
+
             ffmpeg -f lavfi -i nullsrc=s=100x100:d=1 -f null - 2>&1 | grep -q "filter" && echo "✅ FFmpeg working correctly"
           else
             echo "❌ FFmpeg installation failed"
@@ -293,7 +293,7 @@ jobs:
         id: warp-start
         run: |
           docker network inspect warp-net >/dev/null 2>&1 || docker network create warp-net
-          
+
           docker run -d \
             --name warp \
             --restart=always \
@@ -304,7 +304,7 @@ jobs:
             --sysctl net.ipv4.conf.all.src_valid_mark=1 \
             -v warp-data:/var/lib/cloudflare-warp \
             caomingjun/warp
-          
+
           echo "⏳ Waiting for WARP to initialize..."
           for i in {1..30}; do
             if curl -x socks5h://127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace --max-time 5 --silent | grep -q "warp=on"; then
@@ -314,7 +314,7 @@ jobs:
             echo "⏳ Attempt $i/30: WARP not ready yet..."
             sleep 5
           done
-          
+
           echo "🌐 External IP:"
           curl -x socks5h://127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace --max-time 10 | grep "ip=" || echo "⚠️ Could not get IP, but continuing..."
       # ========== Python environment ==========
@@ -345,10 +345,10 @@ jobs:
           OFFLINE_MODE: ${{ secrets.OFFLINE_MODE }}
           DB_CHANNEL_ID: ${{ secrets.DB_CHANNEL_ID }}
           INFO_CHANNEL_ID: ${{ secrets.INFO_CHANNEL_ID }}
-          INSTANCE_ID: 1
+          INSTANCE_ID: 2
           TOTAL_INSTANCES: 3
         run: |
-          echo "🚀 Starting bot (Instance 1/3)..."
+          echo "🚀 Starting bot (Instance 2/3)..."
           python main.py
       # ========== Restart workflow (on failure OR completion) ==========
       - name: Restart workflow
@@ -356,12 +356,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🔄 Triggering restart for instance 1..."
+          echo "🔄 Triggering restart for instance 2..."
           echo "📝 Job status: ${{ job.status }}"
           echo "🔄 Branch: ${{ github.ref_name }}"
-          
+
           sleep 30
-          
-          gh workflow run "python-app.yml" --ref "${{ github.ref_name }}" --repo "${{ github.repository }}"
-          
+
+          gh workflow run "python-app-2.yml" --ref "${{ github.ref_name }}" --repo "${{ github.repository }}"
+
           echo "✅ Restart triggered successfully"

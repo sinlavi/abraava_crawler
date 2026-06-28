@@ -28,7 +28,7 @@ class DownloadService:
         self.error_notifier = error_notifier
         self.album_tracker = album_tracker
         self.download_rate_limiter = download_rate_limiter
-        self.download_semaphore = asyncio.Semaphore(20)
+        self.download_semaphore = asyncio.Semaphore(100)
 
     async def _update_status(self, chat_id, status_msg, text, status_prefix="", is_batch=False, silent=False):
         if silent:
