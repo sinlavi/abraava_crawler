@@ -350,18 +350,4 @@ jobs:
         run: |
           echo "🚀 Starting bot (Instance 2/3)..."
           python main.py
-      # ========== Restart workflow (on failure OR completion) ==========
-      - name: Restart workflow
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🔄 Triggering restart for instance 2..."
-          echo "📝 Job status: ${{ job.status }}"
-          echo "🔄 Branch: ${{ github.ref_name }}"
-
-          sleep 30
-
-          gh workflow run "python-app-2.yml" --ref "${{ github.ref_name }}" --repo "${{ github.repository }}"
-
-          echo "✅ Restart triggered successfully"
+      # ========== Restart workflow (on failure OR completion) =========
