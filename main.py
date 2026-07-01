@@ -168,7 +168,7 @@ async def run_crawler():
                     if consecutive_tech_errors >= 10:
                         logger.critical("Too many consecutive technical errors. Exiting for workflow restart...")
                         sys.exit(1)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(20) # Conservative sleep on tech error
                     continue
 
                 # Reset error counter on any non-technical response (even if success=False or no items)
@@ -176,7 +176,7 @@ async def run_crawler():
 
                 if not queue_resp.get("success") or not queue_resp.get("items"):
                     logger.debug("No pending downloads found. Sleeping...")
-                    await asyncio.sleep(2) # Faster polling
+                    await asyncio.sleep(20) # Conservative polling frequency
                     continue
 
                 items = queue_resp.get("items", [])
@@ -203,9 +203,9 @@ async def run_crawler():
 
                 # Small delay before next poll if we have many active tasks to avoid overwhelming
                 if len(active_tasks) > 50:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(15)
                 else:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(10)
 
             except Exception as e:
                 logger.exception(f"Crawler loop error: {e}")
