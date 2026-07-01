@@ -78,8 +78,20 @@ class HttpClient:
                         await asyncio.sleep(1.0)
                         continue
 
-                    if resp.status == 403 or resp.status >= 500:
-                        # Forbidden or Server Error, try next combination immediately
+                    if resp.status >= 500:
+                        # Check for specific "max_user_connections" error from 3rah API
+                        try:
+                            error_text = await resp.text()
+                            if "max_user_connections" in error_text:
+                                logger.error("3rah API: max_user_connections exceeded. Waiting 5 minutes...")
+                                await asyncio.sleep(300)
+                        except Exception:
+                            pass
+                        logger.warning(f"Request to {url} failed with status {resp.status}, trying next method...")
+                        continue
+
+                    if resp.status == 403:
+                        # Forbidden, try next combination immediately
                         logger.warning(f"Request to {url} failed with status {resp.status}, trying next method...")
                         continue
 
