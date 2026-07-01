@@ -142,6 +142,7 @@ async def run_crawler():
             await reset_stuck_downloads()
 
         active_tasks = set()
+        consecutive_tech_errors = 0
 
         while True:
             # Check for runtime limit
@@ -159,7 +160,21 @@ async def run_crawler():
             try:
                 # Poll for pending downloads
                 queue_resp = await get_download_queue(status="pending", limit=100)
-                if not queue_resp or not queue_resp.get("success") or not queue_resp.get("items"):
+
+                # Check for technical error (get_download_queue returns None on tech error)
+                if queue_resp is None:
+                    consecutive_tech_errors += 1
+                    logger.warning(f"Technical error encountered ({consecutive_tech_errors}/10)")
+                    if consecutive_tech_errors >= 10:
+                        logger.critical("Too many consecutive technical errors. Exiting for workflow restart...")
+                        sys.exit(1)
+                    await asyncio.sleep(2)
+                    continue
+
+                # Reset error counter on any non-technical response (even if success=False or no items)
+                consecutive_tech_errors = 0
+
+                if not queue_resp.get("success") or not queue_resp.get("items"):
                     logger.debug("No pending downloads found. Sleeping...")
                     await asyncio.sleep(2) # Faster polling
                     continue
