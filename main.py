@@ -154,7 +154,7 @@ async def run_crawler():
                     # Give them some time but not forever
                     for _ in range(30):
                         if not active_tasks: break
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(30)
                 break
 
             try:
@@ -168,7 +168,7 @@ async def run_crawler():
                     if consecutive_tech_errors >= 10:
                         logger.critical("Too many consecutive technical errors. Exiting for workflow restart...")
                         sys.exit(1)
-                    await asyncio.sleep(20) # Conservative sleep on tech error
+                    await asyncio.sleep(50) # Conservative sleep on tech error
                     continue
 
                 # Reset error counter on any non-technical response (even if success=False or no items)
@@ -203,13 +203,13 @@ async def run_crawler():
 
                 # Small delay before next poll if we have many active tasks to avoid overwhelming
                 if len(active_tasks) > 50:
-                    await asyncio.sleep(15)
+                    await asyncio.sleep(35)
                 else:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(30)
 
             except Exception as e:
                 logger.exception(f"Crawler loop error: {e}")
-                await asyncio.sleep(20)
+                await asyncio.sleep(30)
 
 def signal_handler(sig, frame):
     sys.exit(0)
