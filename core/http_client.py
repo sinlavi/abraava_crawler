@@ -84,7 +84,7 @@ class HttpClient:
                             error_text = await resp.text()
                             if "max_user_connections" in error_text:
                                 logger.error("3rah API: max_user_connections exceeded. Waiting 5 minutes...")
-                                await asyncio.sleep(10)
+                                await asyncio.sleep(30)
                         except Exception:
                             pass
                         logger.warning(f"Request to {url} failed with status {resp.status}, trying next method...")
