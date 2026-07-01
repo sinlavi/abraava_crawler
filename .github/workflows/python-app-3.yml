@@ -351,4 +351,11 @@ jobs:
           echo "🚀 Starting bot (Instance 3/3)..."
           python main.py
       # ========== Restart workflow (on failure OR completion) ==========
+      - name: Restart workflow
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔄 Restarting workflow..."
+          gh workflow run "Test Deploy 3"
   
